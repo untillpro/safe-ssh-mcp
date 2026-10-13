@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=policy.schema.json
+# System information and monitoring commands.
+# Policy files are trusted operator configuration and must not be populated from remote or untrusted sources.
+
+id:
+  mode: permissive
+
+getent:
+  mode: whitelist
+  positional_variants:
+    - args:
+        - '(?:passwd|group|hosts|services|protocols|networks)'
+      rest_pattern: '[A-Za-z0-9_.:@-]{1,256}'
+      min_rest: 0
+      max_rest: 10
+
+uptime:
+  mode: permissive
+
+# -c is intentionally excluded because it clears the kernel ring buffer.
+dmesg:
+  mode: whitelist
+  flags:
+    - flag: -l
+      value_pattern: '[A-Za-z,]+'
+    - flag: -T
+      value_pattern: null
+    - flag: -H
+      value_pattern: null
+    - flag: -t
+      value_pattern: null
+    - flag: -w
+      value_pattern: null
+    - flag: -x
+      value_pattern: null
+
+last:
+  mode: whitelist
+  flags:
+    - flag: -n
+      value_pattern: '[1-9][0-9]{0,3}'
+    - flag: -f
+      value_pattern: '(?!-).{1,4096}'
+    - flag: -x
+      value_pattern: null
+    - flag: -a
+      value_pattern: null
+    - flag: -d
+      value_pattern: null
+    - flag: -i
+      value_pattern: null
+    - flag: -w
+      value_pattern: null
+
+# Only read-only systemctl operations are expressible. Modifying verbs such as start, stop, and restart do not match.
+systemctl:
+  mode: whitelist
+  positional_variants:
+    - ['(?:list-units|list-unit-files)']
+    - args:
+        - '(?:status|is-active|is-enabled|is-failed|show|list-dependencies|cat)'
+      rest_pattern: '[A-Za-z0-9_.@:-]{1,128}'
+      min_rest: 0
+      max_rest: 10

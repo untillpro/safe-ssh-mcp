@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/untillpro/safe-ssh-mcp/main/policies/policy.schema.json",
+  "title": "Safe SSH MCP command policy",
+  "description": "A set of command-specific validation policies loaded by Safe SSH MCP.",
+  "type": "object",
+  "minProperties": 1,
+  "propertyNames": {
+    "pattern": "^[A-Za-z0-9_.+-]+$"
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/commandPolicy"
+  },
+  "$defs": {
+    "commandPolicy": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/genericPolicy"
+        },
+        {
+          "$ref": "#/$defs/curlHandlerPolicy"
+        },
+        {
+          "$ref": "#/$defs/dockerHandlerPolicy"
+        }
+      ]
+    },
+    "genericPolicy": {
+      "title": "Generic command policy",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "How undeclared flags are handled. The default is permissive.",
+          "enum": [
+            "permissive",
+            "blacklist",
+            "whitelist"
+          ],
+          "default": "permissive"
+        },
+        "flags": {
+          "$ref": "#/$defs/flags"
+        },
+        "require_flags": {
+          "$ref": "#/$defs/flagNames"
+        },
+        "allows_flag_bundling": {
+          "description": "Whether combined short flags may be interpreted as a bundle.",
+          "type": "boolean",
+          "default": false
+        },
+        "positional_variants": {
+          "$ref": "#/$defs/positionalVariants"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "mode": {
+                  "const": "whitelist"
+                }
+              },
+              "required": [
+                "mode"
+              ]
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "require_flags"
+                  ]
+                },
+                {
+                  "required": [
+                    "positional_variants"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "not": {
+                  "required": [
+                    "mode"
+                  ]
+                }
+              },
+              {
+                "properties": {
+                  "mode": {
+                    "const": "permissive"
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "flags": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "curlHandlerPolicy": {
+      "title": "Curl command-handler policy",
+      "type": "object",
+      "required": [
+        "handler"
+      ],
+      "properties": {
+        "handler": {
+          "description": "The specialized validator used for this command.",
+          "const": "curl"
+        },
+        "flags": {
+          "$ref": "#/$defs/flags"
+        },
+        "require_flags": {
+          "$ref": "#/$defs/flagNames"
+        },
+        "allows_flag_bundling": {
+          "description": "Whether combined short flags may be interpreted as a bundle.",
+          "type": "boolean",
+          "default": false
+        },
+        "require_first": {
+          "$ref": "#/$defs/flagName"
+        },
+        "single_request": {
+          "type": "boolean"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/target"
+          }
+        },
+        "netrc_file_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "dockerHandlerPolicy": {
+      "title": "Docker command-handler policy",
+      "description": "A Docker whitelist which additionally permits policy-validated docker exec commands. The generic fields govern only non-exec Docker forms; docker exec accepts no Docker options and validates its inner command through the effective command policy.",
+      "type": "object",
+      "required": [
+        "handler",
+        "mode",
+        "positional_variants"
+      ],
+      "properties": {
+        "handler": {
+          "description": "Enable policy-validated docker exec handling.",
+          "const": "docker"
+        },
+        "mode": {
+          "const": "whitelist"
+        },
+        "flags": {
+          "$ref": "#/$defs/flags"
+        },
+        "require_flags": {
+          "$ref": "#/$defs/flagNames"
+        },
+        "allows_flag_bundling": {
+          "description": "Whether combined short flags may be interpreted as a bundle.",
+          "type": "boolean",
+          "default": false
+        },
+        "positional_variants": {
+          "$ref": "#/$defs/positionalVariants"
+        }
+      },
+      "additionalProperties": false
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/flag"
+      },
+      "uniqueItems": true
+    },
+    "flag": {
+      "type": "object",
+      "required": [
+        "flag",
+        "value_pattern"
+      ],
+      "properties": {
+        "flag": {
+          "$ref": "#/$defs/flagName"
+        },
+        "value_pattern": {
+          "description": "A Python regular expression matched against the complete value, or null when the flag takes no value.",
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "flagName": {
+      "type": "string",
+      "pattern": "^-[^=\\s]+$",
+      "not": {
+        "enum": [
+          "-",
+          "--"
+        ]
+      }
+    },
+    "flagNames": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/flagName"
+      }
+    },
+    "positionalVariants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/exactPositionalVariant"
+          },
+          {
+            "$ref": "#/$defs/boundedRestPositionalVariant"
+          }
+        ]
+      }
+    },
+    "exactPositionalVariant": {
+      "description": "An exact positional sequence expressed as one full-match Python regular expression per argument.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 1024
+      }
+    },
+    "boundedRestPositionalVariant": {
+      "description": "A fixed positional prefix followed by a bounded number of arguments sharing one full-match Python regular expression.",
+      "type": "object",
+      "required": [
+        "args",
+        "rest_pattern",
+        "min_rest",
+        "max_rest"
+      ],
+      "properties": {
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1024
+          }
+        },
+        "rest_pattern": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "min_rest": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_rest": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "host"
+      ],
+      "properties": {
+        "scheme": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "path_prefix": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
+

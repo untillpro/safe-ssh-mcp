@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=policy.schema.json
+# Example safe-ssh-mcp policy extension.
+# Copy this file to a .yaml file in this directory and restart the server.
+# Policy files are trusted operator configuration and must not be populated from remote or untrusted sources.
+
+systemctl:
+  mode: whitelist
+  positional_variants:
+    - ['(?:list-units|list-unit-files)']
+    - args:
+        - '(?:status|is-active|is-enabled|is-failed|show|list-dependencies|cat)'
+      rest_pattern: '[A-Za-z0-9_.@:-]{1,128}'
+      min_rest: 0
+      max_rest: 10
+
+journalctl:
+  mode: whitelist
+  flags:
+    - flag: -u
+      value_pattern: '[A-Za-z0-9_.@:-]{1,128}'
+    - flag: -n
+      value_pattern: '[1-9][0-9]{0,3}'
+    - flag: --since
+      value_pattern: '(?!-).{1,128}'
+    - flag: --until
+      value_pattern: '(?!-).{1,128}'
+    - flag: -p
+      value_pattern: '(?:emerg|alert|crit|err|warning|notice|info|debug|[0-7])'
+    - flag: --no-pager
+      value_pattern: null
+  require_flags:
+    - -n
+  positional_variants:
+    - []
+
+docker:
+  mode: whitelist
+  positional_variants:
+    - ['(?:ps|images|version)']
+    - args:
+        - '(?:inspect|logs|stats)'
+      rest_pattern: '[A-Za-z0-9_.:@/-]{1,256}'
+      min_rest: 0
+      max_rest: 10
+
+# Permissive mode is appropriate only when every argument and flag supported by the command is read-only.
+check-health:
+  mode: permissive
+
+traceroute:
+  mode: whitelist
+  flags:
+    - flag: -m
+      value_pattern: '(?:[1-9]|[12][0-9]|30)'
+    - flag: -w
+      value_pattern: '[0-9]+(?:\.[0-9]+)?'
+    - flag: -q
+      value_pattern: '[1-9][0-9]?'
+  require_flags:
+    - -m

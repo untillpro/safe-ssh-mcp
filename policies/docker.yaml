@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=policy.schema.json
+# Docker read-only inspection and policy-validated container commands.
+# Policy files are trusted operator configuration and must not be populated from remote or untrusted sources.
+
+docker:
+  handler: docker
+  mode: whitelist
+  positional_variants:
+    - ['(?:ps|images|version)']
+    - args:
+        - '(?:inspect|logs)'
+      rest_pattern: '[A-Za-z0-9_.:@/-]{1,256}'
+      min_rest: 1
+      max_rest: 10
+    - args:
+        - 'stats'
+      rest_pattern: '[A-Za-z0-9_.:@/-]{1,256}'
+      min_rest: 0
+      max_rest: 10

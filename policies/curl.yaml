@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=policy.schema.json
+# curl -- loopback-only HTTP GET (handler mode).
+# The command-specific handler applies destination, credential, file-input, and request-count constraints beyond these syntax declarations.
+# Policy files are trusted operator configuration and must not be populated from remote or untrusted sources.
+
+curl:
+  handler: curl
+  require_first: --disable
+  single_request: true
+  netrc_file_paths:
+    - /dev/stdin
+  targets:
+    - host: loopback
+  require_flags:
+    - --disable
+    - --get
+    - --noproxy
+  flags:
+    - flag: --disable
+      value_pattern: null
+    - flag: --get
+      value_pattern: null
+    - flag: --noproxy
+      value_pattern: '\*'
+    - flag: --url
+      value_pattern: '.{1,4096}'
+    - flag: --data-urlencode
+      value_pattern: '.{1,4096}'
+    - flag: --netrc-file
+      value_pattern: '/dev/stdin'
+    - flag: --fail
+      value_pattern: null
+    - flag: --silent
+      value_pattern: null
+    - flag: --show-error
+      value_pattern: null
+    - flag: --max-time
+      value_pattern: '(?:[1-9][0-9]*(?:\.[0-9]+)?|0?\.(?:0*[1-9][0-9]*))'
+    - flag: --connect-timeout
+      value_pattern: '(?:[1-9][0-9]*(?:\.[0-9]+)?|0?\.(?:0*[1-9][0-9]*))'

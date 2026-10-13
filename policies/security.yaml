@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=policy.schema.json
+# Read-only firewall and security-status command policies.
+# These commands can modify security controls in other forms, so every allowed
+# form is enumerated and modifying verbs, flags, and extra arguments fail closed.
+
+ufw:
+  mode: whitelist
+  positional_variants:
+    - ['status']
+    - ['status', '(?:verbose|numbered)']
+
+nft:
+  mode: whitelist
+  positional_variants:
+    - ['list', 'ruleset']
+
+iptables:
+  mode: whitelist
+  allows_flag_bundling: true
+  flags:
+    - flag: -L
+      value_pattern: null
+    - flag: -n
+      value_pattern: null
+    - flag: -v
+      value_pattern: null
+    - flag: -x
+      value_pattern: null
+    - flag: -t
+      value_pattern: '(?:filter|nat|mangle|raw|security)'
+  require_flags:
+    - -L
+  positional_variants:
+    - []
+    - ['(?!-)[A-Za-z0-9_.:+-]{1,128}']
+
+ip6tables:
+  mode: whitelist
+  allows_flag_bundling: true
+  flags:
+    - flag: -L
+      value_pattern: null
+    - flag: -n
+      value_pattern: null
+    - flag: -v
+      value_pattern: null
+    - flag: -x
+      value_pattern: null
+    - flag: -t
+      value_pattern: '(?:filter|nat|mangle|raw|security)'
+  require_flags:
+    - -L
+  positional_variants:
+    - []
+    - ['(?!-)[A-Za-z0-9_.:+-]{1,128}']
+
+getenforce:
+  mode: whitelist
+  positional_variants:
+    - []
+
+aa-status:
+  mode: whitelist
+  positional_variants:
+    - []
+
+auditctl:
+  mode: whitelist
+  flags:
+    - flag: -s
+      value_pattern: null
+  require_flags:
+    - -s
+  positional_variants:
+    - []
+
+fail2ban-client:
+  mode: whitelist
+  positional_variants:
+    - ['status']
+    - ['status', '(?!-)[A-Za-z0-9_.:-]{1,128}']

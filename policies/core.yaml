@@ -1,0 +1,217 @@
+# yaml-language-server: $schema=policy.schema.json
+# Core read-only command policies.
+# These declarations define command-specific permissions. Global shell-safety
+# invariants and specialized value-aware handlers remain enforced by Python.
+# Policy files are trusted operator configuration and must not be populated from
+# remote or untrusted sources.
+
+# File operations
+ls:
+  mode: permissive
+cat:
+  mode: permissive
+pwd:
+  mode: permissive
+file:
+  mode: permissive
+stat:
+  mode: permissive
+
+# Text processing
+grep:
+  mode: permissive
+head:
+  mode: permissive
+tail:
+  mode: permissive
+wc:
+  mode: permissive
+sort:
+  mode: blacklist
+  allows_flag_bundling: true
+  flags:
+    - flag: -o
+      value_pattern: '.+'
+    - flag: --output
+      value_pattern: '.+'
+    - flag: --compress-program
+      value_pattern: '.+'
+uniq:
+  mode: permissive
+cut:
+  mode: permissive
+tr:
+  mode: permissive
+diff:
+  mode: permissive
+comm:
+  mode: permissive
+
+# File search -- block flags that execute commands, delete files, or write output.
+find:
+  mode: blacklist
+  flags:
+    - flag: -exec
+      value_pattern: null
+    - flag: -execdir
+      value_pattern: null
+    - flag: -ok
+      value_pattern: null
+    - flag: -okdir
+      value_pattern: null
+    - flag: -delete
+      value_pattern: null
+    - flag: -fprint
+      value_pattern: '.+'
+    - flag: -fprint0
+      value_pattern: '.+'
+    - flag: -fprintf
+      value_pattern: '.+'
+    - flag: -fls
+      value_pattern: '.+'
+
+# System information
+whoami:
+  mode: permissive
+hostname:
+  mode: whitelist
+  positional_variants:
+    - []
+uname:
+  mode: permissive
+date:
+  mode: blacklist
+  allows_flag_bundling: true
+  flags:
+    - flag: -s
+      value_pattern: '.+'
+    - flag: --set
+      value_pattern: '.+'
+which:
+  mode: permissive
+
+# Disk usage
+du:
+  mode: permissive
+df:
+  mode: permissive
+
+# Path manipulation
+basename:
+  mode: permissive
+dirname:
+  mode: permissive
+
+# Process inspection
+ps:
+  mode: permissive
+top:
+  mode: permissive
+free:
+  mode: permissive
+
+# System logs -- block journal maintenance flags.
+journalctl:
+  mode: blacklist
+  flags:
+    - flag: --vacuum-size
+      value_pattern: '.+'
+    - flag: --vacuum-time
+      value_pattern: '.+'
+    - flag: --vacuum-files
+      value_pattern: '.+'
+    - flag: --rotate
+      value_pattern: null
+    - flag: --flush
+      value_pattern: null
+    - flag: --sync
+      value_pattern: null
+    - flag: --relinquish-var
+      value_pattern: null
+    - flag: --smart-relinquish-var
+      value_pattern: null
+    - flag: --setup-keys
+      value_pattern: null
+    - flag: --update-catalog
+      value_pattern: null
+
+# Archive inspection -- allow listing but not extraction.
+tar:
+  mode: whitelist
+  allows_flag_bundling: true
+  flags:
+    - flag: -t
+      value_pattern: null
+    - flag: -z
+      value_pattern: null
+    - flag: -j
+      value_pattern: null
+    - flag: -v
+      value_pattern: null
+unzip:
+  mode: whitelist
+  flags:
+    - flag: -l
+      value_pattern: null
+    - flag: -v
+      value_pattern: null
+zipinfo:
+  mode: permissive
+
+# Structured data processing
+jq:
+  mode: permissive
+xmllint:
+  mode: blacklist
+  flags:
+    - flag: --output
+      value_pattern: '.+'
+    - flag: --shell
+      value_pattern: null
+yq:
+  mode: blacklist
+  allows_flag_bundling: true
+  flags:
+    - flag: -i
+      value_pattern: null
+    - flag: --in-place
+      value_pattern: null
+
+# Network diagnostics
+ping:
+  mode: whitelist
+  flags:
+    - flag: -c
+      value_pattern: '(?:[1-9]|[1-9][0-9]|100)'
+    - flag: -W
+      value_pattern: '[0-9]+(?:\.[0-9]+)?'
+    - flag: -i
+      value_pattern: '[0-9]+(?:\.[0-9]+)?'
+  require_flags:
+    - -c
+netstat:
+  mode: permissive
+ss:
+  mode: blacklist
+  allows_flag_bundling: true
+  flags:
+    - flag: -K
+      value_pattern: null
+    - flag: --kill
+      value_pattern: null
+iostat:
+  mode: permissive
+nc:
+  mode: whitelist
+  allows_flag_bundling: true
+  flags:
+    - flag: -z
+      value_pattern: null
+    - flag: -v
+      value_pattern: null
+    - flag: -w
+      value_pattern: '[0-9]+(?:\.[0-9]+)?'
+    - flag: -u
+      value_pattern: null
+  require_flags:
+    - -z
