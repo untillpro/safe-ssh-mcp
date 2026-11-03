@@ -1,19 +1,95 @@
 # yaml-language-server: $schema=policy.schema.json
-# Docker read-only inspection and policy-validated container commands.
-# Policy files are trusted operator configuration and must not be populated from remote or untrusted sources.
+# Docker inspection and recursively validated container commands.
 
 docker:
-  handler: docker
   mode: whitelist
+  flags:
+    - { flag: -h, value_pattern: null }
+    - { flag: --help, value_pattern: null }
   positional_variants:
-    - ['(?:ps|images|version)']
-    - args:
-        - '(?:inspect|logs)'
-      rest_pattern: '[A-Za-z0-9_.:@/-]{1,256}'
-      min_rest: 1
-      max_rest: 10
-    - args:
-        - 'stats'
-      rest_pattern: '[A-Za-z0-9_.:@/-]{1,256}'
-      min_rest: 0
-      max_rest: 10
+    - []
+
+  nested_commands:
+    - ["exec", "[^-].*"]
+
+  subcommands:
+    ps:
+      mode: whitelist
+      flags:
+        - { flag: -a, value_pattern: null }
+        - { flag: --all, value_pattern: null }
+        - { flag: -q, value_pattern: null }
+        - { flag: --quiet, value_pattern: null }
+        - { flag: --no-trunc, value_pattern: null }
+        - { flag: -f, value_pattern: ".{1,1024}" }
+        - { flag: --filter, value_pattern: ".{1,1024}" }
+        - { flag: --format, value_pattern: ".{1,1024}" }
+      positional_variants:
+        - []
+
+    images:
+      mode: whitelist
+      positional_variants:
+        - []
+
+    version:
+      mode: whitelist
+      flags:
+        - { flag: --format, value_pattern: ".{1,1024}" }
+      positional_variants:
+        - []
+
+    info:
+      mode: whitelist
+      flags:
+        - { flag: --format, value_pattern: ".{1,1024}" }
+      positional_variants:
+        - []
+
+    inspect:
+      mode: whitelist
+      flags:
+        - { flag: --format, value_pattern: ".{1,1024}" }
+      positional_variants:
+        - args: []
+          rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}"
+          min_rest: 1
+          max_rest: 10
+
+    logs:
+      mode: whitelist
+      flags:
+        - { flag: --tail, value_pattern: "(?:0|[1-9][0-9]{0,3})" }
+        - { flag: --since, value_pattern: ".{1,128}" }
+        - { flag: --until, value_pattern: ".{1,128}" }
+        - { flag: --timestamps, value_pattern: null }
+      require_flags:
+        - --tail
+      positional_variants:
+        - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"]
+
+    stats:
+      mode: whitelist
+      flags:
+        - { flag: --no-stream, value_pattern: null }
+        - { flag: --all, value_pattern: null }
+        - { flag: --no-trunc, value_pattern: null }
+        - { flag: --format, value_pattern: ".{1,1024}" }
+      require_flags:
+        - --no-stream
+      positional_variants:
+        - args: []
+          rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
+          min_rest: 0
+          max_rest: 10
+
+    top:
+      mode: whitelist
+      positional_variants:
+        - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"]
+
+    port:
+      mode: whitelist
+      positional_variants:
+        - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"]
+        - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}", "[0-9]{1,5}(?:/(?:tcp|udp))?"]

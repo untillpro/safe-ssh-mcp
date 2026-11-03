@@ -33,15 +33,27 @@ journalctl:
   positional_variants:
     - []
 
+# Each subcommand owns its flags; nested prefixes delegate to effective policies.
 docker:
   mode: whitelist
-  positional_variants:
-    - ['(?:ps|images|version)']
-    - args:
-        - '(?:inspect|logs|stats)'
-      rest_pattern: '[A-Za-z0-9_.:@/-]{1,256}'
-      min_rest: 0
-      max_rest: 10
+  flags:
+    - {flag: --help, value_pattern: null}
+  nested_commands:
+    - ['exec', '[^-].*']
+  subcommands:
+    ps:
+      mode: whitelist
+      flags:
+        - {flag: -a, value_pattern: null}
+      positional_variants:
+        - []
+    stats:
+      mode: whitelist
+      flags:
+        - {flag: --no-stream, value_pattern: null}
+      require_flags: [--no-stream]
+      positional_variants:
+        - []
 
 # Permissive mode is appropriate only when every argument and flag supported by the command is read-only.
 check-health:

@@ -105,40 +105,53 @@ Each generic command policy has a mode:
 - `permissive` allows every flag and positional argument. It is only suitable for commands whose complete argument grammar is read-only, such as `ls`, `cat`, `grep`, and `ps`.
 - `blacklist` allows every flag except the structured `flags` entries, which identify blocked flags and whether they have attached or inline values. It is suitable only when unrestricted positional arguments cannot select modifying behavior.
 - `whitelist` allows only the structured `flags` entries. An optional `positional_variants` field can define the complete allowed positional grammar.
-- A handler policy delegates command-specific grammar to a deny-by-default Python validator. `curl` uses this mode because destination, credential, and data-input validation cannot be expressed safely through generic flag patterns alone. Docker composes handler and whitelist behavior: ordinary inspection uses its declarative positional variants, while `docker exec` delegates its inner command back to the shared command-policy validator.
+- A handler policy delegates command-specific grammar to a deny-by-default Python validator. `curl` uses this mode because destination, credential, and data-input validation cannot be expressed safely through generic flag patterns alone. Docker uses generic `subcommands` and `nested_commands` rules; it has no specialized handler.
 
 Every `flags` item contains `flag` and the required `value_pattern` field. A regular-expression string means the flag requires exactly one value; explicit `null` means the flag accepts no value. Patterns use case-sensitive full-string matching. The validator accepts separate and inline long values (`--output file` and `--output=file`) and separate and attached short values (`-n 100` and `-n100`). An exact declared flag takes precedence over attached-value parsing. Short bundles such as `-tzv` are accepted only when `allows_flag_bundling: true`, after exact-flag and attached-value interpretations fail. An exact `--` token ends option parsing.
 
 `require_flags` lists normalized flags that must be present. For example, `ping` requires `-c` and its value pattern limits the count to 1 through 100.
 
-In whitelist mode, `positional_variants` is authoritative when present and unrestricted positional behavior is preserved when it is omitted. An array variant contains one regular expression per positional token and therefore has exact arity; `[]` explicitly permits no positional arguments. A bounded-rest variant contains fixed `args`, a `rest_pattern`, and finite `min_rest` and `max_rest` values. A command is accepted when one entire variant matches.
+In flat whitelist policies, `positional_variants` is authoritative when present and unrestricted positional behavior is preserved when it is omitted; policies declaring `subcommands` or `nested_commands` instead default to `[[]]` when it is omitted. An array variant contains one regular expression per positional token and therefore has exact arity; `[]` explicitly permits no positional arguments. A bounded-rest variant contains fixed `args`, a `rest_pattern`, and finite `min_rest` and `max_rest` values. A command is accepted when one entire variant matches.
 
-Policy files are trusted operator configuration and must not be populated from remote or untrusted sources. Files load in deterministic filename order, and every command must be defined exactly once. At startup the loader rejects a missing or empty policy directory, malformed YAML, duplicate mapping keys, command names repeated across files, unknown fields, legacy string-only flags, missing `value_pattern` fields, invalid variant shapes, invalid regular expressions, patterns longer than 1,024 characters, `positional_variants` outside whitelist mode, and Docker handler policies which do not retain a whitelist and positional variants. It compiles each regular expression once. Before matching, it rejects flag values and positional tokens longer than 4,096 characters.
+Policy files are trusted operator configuration and must not be populated from remote or untrusted sources. Files load in deterministic filename order, and every command must be defined exactly once. At startup the loader rejects a missing or empty policy directory, malformed YAML, duplicate mapping keys, command names repeated across files, unknown fields, legacy string-only flags, missing `value_pattern` fields, invalid variant shapes, invalid regular expressions, patterns longer than 1,024 characters, `positional_variants`, `subcommands`, or `nested_commands` outside whitelist mode, invalid subcommand names, empty routing collections, duplicate nested prefixes, and unsupported handler selectors including `handler: docker`. It compiles each regular expression once. Before matching, it rejects flag values and positional tokens longer than 4,096 characters.
+
+### Subcommands and nested commands
+
+`subcommands` maps exact, case-sensitive, non-option token names to independently validated command policies. The map can nest up to eight levels below the root. Each node owns its flags, required flags, bundling setting, and positional grammar. Parent flags and requirements are not inherited. A root invocation such as `docker -h` uses only the root policy; root flags cannot precede a subcommand invocation. Unknown subcommands are rejected, and routing nodes default to no positional arguments when `positional_variants` is omitted. Existing flat policies retain their original default modes and positional behavior.
+
+`nested_commands` contains arrays of full-match regular expressions, one per prefix token. For example, `[["exec", "[^-].*"]]` consumes `exec` and a non-empty container reference not beginning with `-`; the next token is the nested command name and the rest are its arguments. Prefixes are matched against raw tokens before subcommand dispatch or flag parsing, so the outer policy never consumes inner flags. An empty prefix `[]` delegates all arguments and still requires a command name.
+
+Dispatch order at every node is:
+
+1. Use its specialized handler, if declared; handler policies cannot also declare generic routing fields.
+2. Match all declared nested prefixes; reject multiple matches or a matched prefix with no command, otherwise recursively validate the remaining command through the complete effective policy registry.
+3. Dispatch an exact leading subcommand token to its child policy.
+4. Validate a root or leaf invocation using its own flags and positional variants, rejecting unknown subcommands.
+
+Nested validation failures are final and never fall back to a subcommand or positional rule. A command name cannot re-enter an active command policy, even through another wrapper, and at most eight nested command levels are allowed in addition to the initial command. The loader accepts at most 128 subcommands or nested prefixes per node, at most 128 patterns per prefix, and at most eight subcommand levels; existing pattern, token, argument, pipeline, timeout, and output limits remain in force. The runtime rejects overlapping prefix matches without trying to prove regex overlap during startup. Cyclic YAML policy objects fail the loader's depth limit or YAML construction checks.
+
+Discovery recursively reports the effective `subcommands`, `nested_commands`, root and leaf rules, and policy depth limits without compiled regex objects or Docker-specific metadata. `ssh_describe_validation_rules` includes live routing trees and container fallback guidance; execution and dry runs use the same validator.
 
 ### Policy-validated Docker execution
 
-The bundled Docker policy enables `handler: docker`. The handler preserves the existing inspection whitelist and additionally accepts one nested command boundary:
-
-```text
-docker exec <container> <command> [arguments...]
-```
+The bundled [Docker policy](../config/policies/docker.yaml) expresses inspection with independent subcommand policies and execution with `nested_commands: [["exec", "[^-].*"]]`. Root help is allowed. Container inspection includes `ps`, `images`, `version`, `info`, `inspect`, `logs`, `stats`, `top`, and `port`; flags are scoped to each subcommand. Logs require `--tail` with a value from 0 through 9999 and reject follow mode. Stats require the bare `--no-stream` flag and reject assignments which could disable it.
 
 ```mermaid
 flowchart LR
-    Docker["docker stage"] --> Kind{"First argument is exec?"}
-    Kind -->|No| Generic["Validate Docker whitelist"]
-    Kind -->|Yes| Envelope["Reject options and validate container token"]
-    Envelope --> Inner["Extract one inner command stage"]
-    Inner --> Policy["Resolve effective command policy"]
-    Policy --> Guard{"Inner handler is docker?"}
-    Guard -->|Yes| Reject["Reject recursion"]
-    Guard -->|No| Validate["Run generic or specialized validator"]
-    Validate --> Accept["Accept original Docker stage"]
+    Stage["Structured command stage"] --> Prefix{"Nested prefix matches?"}
+    Prefix -->|Multiple| Reject["Reject"]
+    Prefix -->|One| Inner["Validate remaining command against effective policies"]
+    Inner --> Guard{"Valid command, no cycle, within depth limit?"}
+    Guard -->|No| Reject
+    Guard -->|Yes| Accept["Accept original stage"]
+    Prefix -->|None| Child{"Known leading subcommand?"}
+    Child -->|Yes| Recurse["Dispatch child policy"]
+    Child -->|No| Own["Validate own flags and positional rules"]
 ```
 
-The container may be any non-option name or ID reference accepted by Docker and is not allowlisted. Docker remains authoritative for resolving that reference. Docker exec options are rejected, and an inner Docker handler invocation is rejected. All other inner commands use the same effective policies as top-level stages, including specialized handlers such as `curl`. The handler validates the structured arguments directly and does not introduce `sh -c` or another shell layer.
+The container may be any non-option reference accepted by Docker and is not allowlisted. Docker remains authoritative for resolving it. Exec options are rejected by the prefix pattern. A nested Docker command is rejected by the generic command-cycle guard. Other inner commands use their effective policies, including specialized handlers such as `curl`. The original structured stage is rendered once with `shlex.join`; validation introduces no shell text, nested pipeline parser, or `sh -c` layer.
 
-This design intentionally treats a command allowed on the host as allowed in every reachable container. Policy activation is server-wide. To disable `docker exec` while retaining Docker inspection, remove `handler: docker` from `config/policies/docker.yaml`, keep its whitelist and positional variants, and restart the server. See [ADR 006](adr/006-policy-validated-docker-exec.md).
+This design intentionally treats a command allowed on the host as allowed in every reachable container. Policy activation is server-wide. To disable container execution while retaining inspection, remove `nested_commands` from `config/policies/docker.yaml`, leave the root and subcommand rules unchanged, and restart the server. Old `handler: docker` policies must be migrated before startup. See [ADR 006](adr/006-policy-validated-docker-exec.md).
 
 ## Runtime configuration
 

@@ -2,77 +2,75 @@
 
 Date: 2026-10-13
 
+Revised: 2026-11-03
+
 ## Status
 
-Accepted. Extends the Docker inspection policy with container execution while retaining the effective command policies as the authorization boundary.
+Accepted. The original Docker-specific handler is replaced by generic subcommand dispatch and nested command validation in the policy DSL.
 
 ## Context
 
-Operational commands may be installed only inside a container. For example, a database container may provide `nodetool` while the Docker host does not. The existing Docker whitelist permits inspection such as `docker ps`, `docker inspect`, and `docker logs`, but rejects `docker exec` entirely.
+Operational commands may be installed only inside a container. For example, a database container may provide `nodetool` while the Docker host does not. Inner commands should share the effective host policies instead of duplicating their permissions inside Docker configuration.
 
-Duplicating every allowed command and argument rule inside the Docker policy would create a second policy system which could drift from host command validation. Restricting container names would add deployment-specific configuration without strengthening the accepted trust model: a command considered safe on the host is also considered safe inside any container reachable by the SSH account.
+The original flat Docker whitelist could select inspection verbs through positional variants but could not scope flags or requirements to individual subcommands. For example, `ps` filters must not enable log following, and requiring `--no-stream` for stats must not require it for every inspection command. The initial `handler: docker` implementation solved container execution through special Python code but left ordinary inspection on the flat policy model.
 
 ## Decision
 
-Add a built-in `docker` handler selected by `handler: docker` in the Docker policy. The bundled policy enables it by default.
+Express Docker behavior entirely through generic whitelist policies:
 
-The handler composes with the generic Docker whitelist:
+- `subcommands` maps exact leading tokens to independent policies with their own flags, required flags, and positional rules; maps can nest for multi-level commands.
+- Root rules support `docker -h` and `docker --help` without allowing those flags automatically on child policies.
+- `nested_commands` lists raw-token regex prefixes before a command which must pass its own effective policy.
+- Docker uses `nested_commands: [["exec", "[^-].*"]]`: consume `exec` and one non-empty, non-option container reference, then validate the remaining command recursively.
+- Nested prefix matching happens before subcommand dispatch or flag parsing, preserving the ownership of inner flags.
+- Multiple prefix matches, a missing nested command, failed inner validation, and re-entry into an active command policy are rejected without fallback.
+- The engine allows at most eight nested command levels and eight subcommand levels, with bounded routing collections and the existing pipeline, argument, token, and pattern limits.
+- The specialized curl handler remains available for inner commands and retains its destination and credential checks.
+- The original structured stage is rendered once with `shlex.join`; no nested pipeline syntax, shell text, or `sh -c` layer is introduced.
 
-- Ordinary Docker forms continue through the policy's `mode`, `flags`, and `positional_variants` rules.
-- `docker exec <container> <command> [arguments...]` is parsed as one container boundary followed by one inner command stage.
-- The container may be any non-option name or ID reference accepted by Docker. It is not allowlisted, and Docker remains authoritative for resolving it.
-- Docker exec options are rejected. The token immediately after `exec` must be the container.
-- The inner command is resolved from the complete effective command policy and validated by the same shared stage validator used for top-level pipeline stages.
-- Generic inner policies and other specialized handlers such as `curl` remain available.
-- An inner command using `handler: docker` is rejected, preventing nested Docker handling and recursion.
-- The original structured stage is rendered once with `shlex.join`; the handler neither constructs shell text nor invokes `sh -c`.
+The container may be any non-option reference accepted by Docker and is not allowlisted. Docker remains authoritative for resolving it. This retains the trust assumption that a command form considered safe on the host is also safe inside any container reachable by the SSH account.
 
-A top-level structured pipeline may contain a Docker stage and other stages. The handler does not parse or permit a nested pipeline inside `docker exec`.
+## Configuration and migration
 
-## Configuration and opt-out
-
-The default policy is shaped as follows:
+The policy shape is:
 
 ```yaml
 docker:
-  handler: docker
   mode: whitelist
-  positional_variants:
-    # Existing inspection-only variants
+  flags:
+    - {flag: --help, value_pattern: null}
+  nested_commands:
+    - ['exec', '[^-].*']
+  subcommands:
+    ps:
+      mode: whitelist
+      flags:
+        - {flag: -a, value_pattern: null}
+      positional_variants:
+        - []
 ```
 
-To disable `docker exec` while retaining Docker inspection, remove only `handler: docker`, leave `mode: whitelist` and `positional_variants` unchanged, and restart the MCP server. Removing the entire Docker command policy disables all Docker commands.
+The complete bundled policy covers `ps`, `images`, `version`, `info`, `inspect`, `logs`, `stats`, `top`, and `port`. Logs require a bounded `--tail` value from 0 through 9999 and reject following; stats require the bare `--no-stream` flag. Root and child flags are independent. When positional variants are omitted, routing nodes default to no positionals; flat policies keep their existing semantics.
 
-Policy selection is server-wide. Per-host or per-container activation is not part of this decision.
+To migrate, remove `handler: docker`, declare the nested prefix above, and move inspection rules into child policies. The removed handler selector fails startup rather than falling back to weaker validation. Update policy schemas and restart the server with the matching implementation and policies.
 
-## Rationale
-
-- **Shared safety assumption.** This design assumes that a command form accepted as safe by the effective host policy is also safe when executed inside any container reachable by the same SSH account. Therefore, host and container execution share one command policy rather than maintaining separate allowlists. Operators who do not accept this assumption can remove `handler: docker` or run a separate MCP instance with a narrower policy.
-- **One authorization boundary.** The effective command policy remains the source of truth for both host and container commands.
-- **No duplicated command lists.** Adding or tightening a command policy immediately changes its Docker execution behavior after restart.
-- **Explicit parser boundary.** Python understands only Docker's `exec` envelope; each inner command remains owned by its existing generic or specialized validator.
-- **Fail closed at the authorization boundary.** Missing tokens, Docker options, unknown inner commands, rejected arguments, and nested Docker handlers all cause rejection before SSH execution. An unknown or malformed non-option container reference is harmlessly passed to Docker, which rejects it before starting the inner command.
+To disable container execution while retaining inspection, remove only `nested_commands` and restart the server. Removing the entire Docker policy disables all Docker commands. Activation remains server-wide; per-host or per-container policy selection is outside this decision.
 
 ## Consequences
 
-### Positive
-
-- Agents can run existing read-only diagnostic commands where those binaries actually exist.
-- Docker inspection retains declarative YAML validation and can be preserved when execution is disabled.
-- Discovery can describe both inspection variants and the nested policy-validation rule.
-
-### Negative
-
-- Enabling the handler exposes every effective command policy in every container reference resolvable by Docker for the SSH account.
-- The design does not distinguish host-safe from container-safe command semantics.
-- Operators requiring host-specific or container-specific restrictions need separate MCP instances with different policy directories or a future scoped-policy design.
+- Inspection flags and required options can be constrained independently without Docker-specific Python dispatch.
+- Wrapper commands can reuse the same nested-command feature, including nesting across different command policies within the generic bounds.
+- Nested Docker invocations remain rejected by the generic command-cycle guard.
+- Discovery describes recursive policies generically and continues teaching agents to find containers before running diagnostics inside them.
+- Policies with overlapping nested prefixes fail closed for matching invocations; startup does not attempt to prove arbitrary regex overlap.
+- Enabling container execution exposes the effective command policies in every container reachable by the SSH account; operators requiring narrower boundaries need separate MCP instances with different policy directories.
 
 ## Reference implementation
 
-- Handler dispatch, Docker parsing, and the shared single-command validator: `safe_ssh_mcp.py`.
-- Default configuration: `config/policies/docker.yaml`.
-- Editor schema: `config/policies/policy.schema.json`.
-- Regression coverage: `tests/test_dsl.py`.
+- Recursive policy loading, generic dispatch, nested validation, and discovery: [safe_ssh_mcp.py](../../safe_ssh_mcp.py).
+- Bundled configuration: [docker.yaml](../../config/policies/docker.yaml).
+- Editor schema: [policy.schema.json](../../config/policies/policy.schema.json).
+- Regression coverage: [test_dsl.py](../../tests/test_dsl.py).
 
 ## References
 

@@ -19,9 +19,6 @@
         },
         {
           "$ref": "#/$defs/curlHandlerPolicy"
-        },
-        {
-          "$ref": "#/$defs/dockerHandlerPolicy"
         }
       ]
     },
@@ -51,6 +48,22 @@
         },
         "positional_variants": {
           "$ref": "#/$defs/positionalVariants"
+        },
+        "subcommands": {
+          "description": "Exact subcommand names with independent policies; root flags are not inherited.",
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 128,
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_.+][A-Za-z0-9_.+-]*$",
+            "maxLength": 4096
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/commandPolicy"
+          }
+        },
+        "nested_commands": {
+          "$ref": "#/$defs/nestedCommandPrefixes"
         }
       },
       "additionalProperties": false,
@@ -79,6 +92,16 @@
                 {
                   "required": [
                     "positional_variants"
+                  ]
+                },
+                {
+                  "required": [
+                    "subcommands"
+                  ]
+                },
+                {
+                  "required": [
+                    "nested_commands"
                   ]
                 }
               ]
@@ -156,40 +179,6 @@
           "items": {
             "type": "string"
           }
-        }
-      },
-      "additionalProperties": false
-    },
-    "dockerHandlerPolicy": {
-      "title": "Docker command-handler policy",
-      "description": "A Docker whitelist which additionally permits policy-validated docker exec commands. The generic fields govern only non-exec Docker forms; docker exec accepts no Docker options and validates its inner command through the effective command policy.",
-      "type": "object",
-      "required": [
-        "handler",
-        "mode",
-        "positional_variants"
-      ],
-      "properties": {
-        "handler": {
-          "description": "Enable policy-validated docker exec handling.",
-          "const": "docker"
-        },
-        "mode": {
-          "const": "whitelist"
-        },
-        "flags": {
-          "$ref": "#/$defs/flags"
-        },
-        "require_flags": {
-          "$ref": "#/$defs/flagNames"
-        },
-        "allows_flag_bundling": {
-          "description": "Whether combined short flags may be interpreted as a bundle.",
-          "type": "boolean",
-          "default": false
-        },
-        "positional_variants": {
-          "$ref": "#/$defs/positionalVariants"
         }
       },
       "additionalProperties": false
@@ -324,7 +313,21 @@
         }
       },
       "additionalProperties": false
+    },
+    "nestedCommandPrefixes": {
+      "description": "Full-match regex prefixes before another policy-validated command; checked before subcommand dispatch and flag parsing. An empty prefix delegates all arguments. Overlapping matches are rejected at runtime.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "array",
+        "maxItems": 128,
+        "items": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
     }
   }
 }
-

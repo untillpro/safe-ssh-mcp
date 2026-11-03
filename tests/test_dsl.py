@@ -18,12 +18,16 @@ from tempfile import TemporaryDirectory
 from typing import ClassVar, cast
 from unittest.mock import patch
 
+import yaml
+
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from safe_ssh_mcp import (
     COMMAND_POLICIES,
+    MAX_NESTED_COMMAND_DEPTH,
     MAX_PATTERN_LENGTH,
+    MAX_POLICY_DEPTH,
     MAX_POLICY_TOKEN_LENGTH,
     CommandPolicy,
     CommandStage,
@@ -195,26 +199,18 @@ class ShippedPolicyRegressionTests(unittest.TestCase):
                 self.assert_validation(pipeline, True)
 
 
-class DockerHandlerTests(unittest.TestCase):
-    DOCKER_RAW_POLICY: ClassVar[dict[str, object]] = {
-        "handler": "docker",
-        "mode": "whitelist",
-        "positional_variants": [
-            ["(?:ps|images|version)"],
-            {
-                "args": ["(?:inspect|logs)"],
-                "rest_pattern": "[A-Za-z0-9_.:@/-]{1,256}",
-                "min_rest": 1,
-                "max_rest": 10,
-            },
-            {
-                "args": ["stats"],
-                "rest_pattern": "[A-Za-z0-9_.:@/-]{1,256}",
-                "min_rest": 0,
-                "max_rest": 10,
-            },
-        ],
-    }
+def raw_policy_file(name: str, command: str) -> dict[str, object]:
+    raw: object = yaml.safe_load(
+        (REPOSITORY_ROOT / "config" / "policies" / name).read_text(encoding="utf-8")
+    )
+    policies = cast(dict[str, object], raw)
+    return cast(dict[str, object], policies[command])
+
+
+class DockerPolicyTests(unittest.TestCase):
+    DOCKER_RAW_POLICY: ClassVar[dict[str, object]] = raw_policy_file(
+        "docker.yaml", "docker"
+    )
     DOCKER_POLICY = policy("docker", DOCKER_RAW_POLICY)
     NODETOOL_POLICY = policy(
         "nodetool",
@@ -267,11 +263,16 @@ class DockerHandlerTests(unittest.TestCase):
         docker_policy = policy(
             "docker",
             {
-                "handler": "docker",
                 "mode": "whitelist",
-                "flags": [{"flag": "--format", "value_pattern": ".+"}],
-                "require_flags": ["--format"],
-                "positional_variants": [["ps"]],
+                "nested_commands": [["exec", "[^-].*"]],
+                "subcommands": {
+                    "ps": {
+                        "mode": "whitelist",
+                        "flags": [{"flag": "--format", "value_pattern": ".+"}],
+                        "require_flags": ["--format"],
+                        "positional_variants": [[]],
+                    }
+                },
             },
         )
         policies = dict(self.POLICIES)
@@ -317,7 +318,7 @@ class DockerHandlerTests(unittest.TestCase):
             "scylla",
             "nodetool",
             "reloadschema",
-            reason_fragment="inner command 'nodetool' failed policy validation",
+            reason_fragment="nested command 'nodetool' failed policy validation",
         )
         self.assert_docker(
             False,
@@ -331,10 +332,10 @@ class DockerHandlerTests(unittest.TestCase):
 
     def test_exec_rejects_options_and_missing_tokens(self) -> None:
         cases: tuple[tuple[tuple[str, ...], str], ...] = (
-            (("exec", "-it", "scylla", "uptime"), "options are not allowed"),
-            (("exec", "", "uptime"), "requires a non-empty container"),
-            (("exec",), "requires a container"),
-            (("exec", "scylla"), "requires an inner command"),
+            (("exec", "-it", "scylla", "uptime"), "unknown subcommand"),
+            (("exec", "", "uptime"), "unknown subcommand"),
+            (("exec",), "unknown subcommand"),
+            (("exec", "scylla"), "requires a nested command"),
         )
         for arguments, fragment in cases:
             with self.subTest(arguments=arguments):
@@ -344,7 +345,7 @@ class DockerHandlerTests(unittest.TestCase):
                     reason_fragment=fragment,
                 )
 
-    def test_exec_rejects_nested_docker_handler_invocation(self) -> None:
+    def test_exec_rejects_nested_docker_policy_cycle(self) -> None:
         self.assert_docker(
             False,
             "exec",
@@ -353,7 +354,7 @@ class DockerHandlerTests(unittest.TestCase):
             "exec",
             "inner",
             "uptime",
-            reason_fragment="nested Docker handler invocation",
+            reason_fragment="policy cycle",
         )
 
     def test_container_and_inner_arguments_remain_literal_when_rendered(self) -> None:
@@ -373,9 +374,11 @@ class DockerHandlerTests(unittest.TestCase):
             "docker exec 'service;id' grep 'error|warning' '/var/log/app log'",
         )
 
-    def test_removing_handler_preserves_inspection_and_disables_exec(self) -> None:
+    def test_removing_nested_commands_preserves_inspection_and_disables_exec(
+        self,
+    ) -> None:
         raw_policy = dict(self.DOCKER_RAW_POLICY)
-        del raw_policy["handler"]
+        del raw_policy["nested_commands"]
         inspection_only = policy("docker", raw_policy)
         policies = dict(self.POLICIES)
         policies["docker"] = inspection_only
@@ -388,6 +391,390 @@ class DockerHandlerTests(unittest.TestCase):
             )
         self.assertTrue(inspection_accepted, msg=inspection_reason)
         self.assertFalse(exec_accepted)
+
+
+class GenericDispatchTests(unittest.TestCase):
+    @staticmethod
+    def check(
+        policies: dict[str, CommandPolicy], command: str, *arguments: str
+    ) -> tuple[bool, str]:
+        with patch.dict(COMMAND_POLICIES, policies, clear=True):
+            return validate_pipeline(single(command, *arguments))
+
+    def test_root_and_subcommand_flags_are_independent(self) -> None:
+        router = policy(
+            "probe",
+            {
+                "mode": "whitelist",
+                "flags": [{"flag": "--help", "value_pattern": None}],
+                "subcommands": {
+                    "list": {
+                        "mode": "whitelist",
+                        "flags": [{"flag": "-f", "value_pattern": "status=running"}],
+                        "positional_variants": [[]],
+                    },
+                    "watch": {
+                        "mode": "whitelist",
+                        "flags": [{"flag": "-f", "value_pattern": None}],
+                        "positional_variants": [["container"]],
+                    },
+                },
+            },
+        )
+        policies = {"probe": router}
+        cases = (
+            (("--help",), True),
+            (("list", "-f", "status=running"), True),
+            (("watch", "-f", "container"), True),
+            (("list", "--help"), False),
+            (("list", "-f"), False),
+            (("watch", "-f", "status=running", "container"), False),
+            (("--help", "list"), False),
+            (("unlisted",), False),
+        )
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                accepted, reason = self.check(policies, "probe", *arguments)
+                self.assertEqual(accepted, expected, reason)
+
+    def test_subcommands_have_their_own_required_flags_and_levels(self) -> None:
+        router = policy(
+            "probe",
+            {
+                "mode": "whitelist",
+                "flags": [{"flag": "--root", "value_pattern": None}],
+                "require_flags": ["--root"],
+                "subcommands": {
+                    "service": {
+                        "mode": "whitelist",
+                        "subcommands": {
+                            "ps": {
+                                "mode": "whitelist",
+                                "flags": [
+                                    {"flag": "--snapshot", "value_pattern": None}
+                                ],
+                                "require_flags": ["--snapshot"],
+                                "positional_variants": [["web"]],
+                            }
+                        },
+                    }
+                },
+            },
+        )
+        policies = {"probe": router}
+        self.assertTrue(self.check(policies, "probe", "--root")[0])
+        self.assertTrue(
+            self.check(policies, "probe", "service", "ps", "--snapshot", "web")[0]
+        )
+        for args in (
+            ("service", "ps", "web"),
+            ("service", "rm", "web"),
+            ("service", "--root"),
+            ("service", "ps", "--root", "--snapshot", "web"),
+        ):
+            with self.subTest(arguments=args):
+                self.assertFalse(self.check(policies, "probe", *args)[0])
+
+    def test_nested_commands_split_raw_tokens_before_flag_parsing(self) -> None:
+        wrapper = policy(
+            "wrapper",
+            {
+                "mode": "whitelist",
+                "flags": [{"flag": "--format", "value_pattern": "wrapper-only"}],
+                "nested_commands": [["run", "[^-].*"]],
+            },
+        )
+        inner = policy(
+            "report",
+            {
+                "mode": "whitelist",
+                "flags": [{"flag": "--format", "value_pattern": "inner-only"}],
+                "require_flags": ["--format"],
+                "positional_variants": [[]],
+            },
+        )
+        policies = {"wrapper": wrapper, "report": inner}
+        self.assertTrue(
+            self.check(
+                policies, "wrapper", "run", "web", "report", "--format", "inner-only"
+            )[0]
+        )
+        self.assertFalse(
+            self.check(
+                policies, "wrapper", "run", "web", "report", "--format", "wrapper-only"
+            )[0]
+        )
+        self.assertFalse(
+            self.check(
+                policies, "wrapper", "run", "-i", "report", "--format", "inner-only"
+            )[0]
+        )
+        self.assertFalse(self.check(policies, "wrapper", "run", "web", "report")[0])
+        self.assertFalse(self.check(policies, "wrapper", "run", "web", "")[0])
+
+    def test_prefix_matches_are_full_token_case_sensitive_matches(self) -> None:
+        policies = {
+            "wrapper": policy(
+                "wrapper", {"mode": "whitelist", "nested_commands": [["run", "web"]]}
+            ),
+            "uptime": policy("uptime", {"mode": "permissive"}),
+        }
+        self.assertTrue(self.check(policies, "wrapper", "run", "web", "uptime")[0])
+        for prefix in (("RUN", "web"), ("run-extra", "web"), ("run", "web-extra")):
+            self.assertFalse(self.check(policies, "wrapper", *prefix, "uptime")[0])
+
+    def test_nested_failures_and_ambiguous_matches_cannot_fall_back(self) -> None:
+        for prefixes in ([["run"]], [["run"], ["r.*"]]):
+            wrapper = policy(
+                "wrapper",
+                {
+                    "mode": "whitelist",
+                    "positional_variants": [["run", "uptime"]],
+                    "nested_commands": prefixes,
+                    "subcommands": {"run": {"mode": "permissive"}},
+                },
+            )
+            policies = {"wrapper": wrapper}
+            accepted, reason = self.check(policies, "wrapper", "run", "uptime")
+            self.assertFalse(accepted)
+            self.assertIn(
+                "failed policy validation" if len(prefixes) == 1 else "ambiguous",
+                reason,
+            )
+
+    def test_nested_commands_can_be_declared_on_a_subcommand(self) -> None:
+        policies = {
+            "tool": policy(
+                "tool",
+                {
+                    "mode": "whitelist",
+                    "subcommands": {
+                        "run": {"mode": "whitelist", "nested_commands": [["web"]]}
+                    },
+                },
+            ),
+            "uptime": policy("uptime", {"mode": "permissive"}),
+        }
+        self.assertTrue(self.check(policies, "tool", "run", "web", "uptime")[0])
+        self.assertFalse(self.check(policies, "tool", "run", "web")[0])
+
+    def test_empty_prefix_delegates_arguments_and_requires_a_command(self) -> None:
+        policies = {
+            "wrapper": policy(
+                "wrapper", {"mode": "whitelist", "nested_commands": [[]]}
+            ),
+            "uptime": policy("uptime", {"mode": "permissive"}),
+        }
+        self.assertTrue(self.check(policies, "wrapper", "uptime")[0])
+        self.assertFalse(self.check(policies, "wrapper")[0])
+
+    def test_cycles_are_rejected_across_multiple_command_policies(self) -> None:
+        policies = {
+            name: policy(name, {"mode": "whitelist", "nested_commands": [["run"]]})
+            for name in ("alpha", "beta")
+        }
+        accepted, reason = self.check(policies, "alpha", "run", "beta", "run", "alpha")
+        self.assertFalse(accepted)
+        self.assertIn("policy cycle", reason)
+
+    def test_nested_command_depth_boundary(self) -> None:
+        for count, expected in (
+            (MAX_NESTED_COMMAND_DEPTH, True),
+            (MAX_NESTED_COMMAND_DEPTH + 1, False),
+        ):
+            policies = {
+                f"wrapper{index}": policy(
+                    f"wrapper{index}", {"mode": "whitelist", "nested_commands": [[]]}
+                )
+                for index in range(count)
+            }
+            policies["uptime"] = policy("uptime", {"mode": "permissive"})
+            arguments = [*(f"wrapper{index}" for index in range(1, count)), "uptime"]
+            accepted, reason = self.check(policies, "wrapper0", *arguments)
+            self.assertEqual(accepted, expected, reason)
+            if not expected:
+                self.assertIn("depth", reason)
+
+    def test_router_defaults_do_not_change_flat_policy_defaults(self) -> None:
+        policies = {
+            "flat": policy("flat", {"mode": "whitelist"}),
+            "router": policy(
+                "router", {"mode": "whitelist", "nested_commands": [["run"]]}
+            ),
+        }
+        self.assertTrue(self.check(policies, "flat", "any-positional")[0])
+        self.assertFalse(self.check(policies, "router", "any-positional")[0])
+
+    def test_recursive_discovery_includes_generic_subcommands_and_prefixes(
+        self,
+    ) -> None:
+        router = policy(
+            "probe",
+            {
+                "mode": "whitelist",
+                "subcommands": {
+                    "service": {
+                        "mode": "whitelist",
+                        "subcommands": {
+                            "run": {"mode": "whitelist", "nested_commands": [["web"]]}
+                        },
+                    }
+                },
+            },
+        )
+        with patch.dict(COMMAND_POLICIES, {"probe": router}, clear=True):
+            result: object = json.loads(ssh_list_allowed_commands())
+            rules = ssh_describe_validation_rules()
+        commands = cast(dict[str, object], cast(dict[str, object], result)["commands"])
+        probe = cast(dict[str, object], commands["probe"])
+        service = cast(
+            dict[str, object], cast(dict[str, object], probe["subcommands"])["service"]
+        )
+        run = cast(
+            dict[str, object], cast(dict[str, object], service["subcommands"])["run"]
+        )
+        self.assertEqual(run["nested_commands"], [["web"]])
+        self.assertIn('"probe"', rules)
+        self.assertNotIn("_compiled", json.dumps(result))
+
+
+class RecursivePolicySchemaTests(unittest.TestCase):
+    def test_invalid_recursive_policy_fields_fail_closed(self) -> None:
+        cases: tuple[tuple[object, str], ...] = (
+            ({"subcommands": {"ps": {"mode": "whitelist"}}}, "only in whitelist"),
+            ({"mode": "blacklist", "nested_commands": [["run"]]}, "only in whitelist"),
+            ({"mode": "whitelist", "subcommands": {}}, "non-empty object"),
+            ({"mode": "whitelist", "subcommands": []}, "non-empty object"),
+            (
+                {"mode": "whitelist", "subcommands": {"-option": {}}},
+                "invalid subcommand",
+            ),
+            (
+                {"mode": "whitelist", "subcommands": {"service ps": {}}},
+                "invalid subcommand",
+            ),
+            ({"mode": "whitelist", "subcommands": {1: {}}}, "invalid subcommand"),
+            (
+                {
+                    "mode": "whitelist",
+                    "subcommands": {"x" * (MAX_POLICY_TOKEN_LENGTH + 1): {}},
+                },
+                "invalid subcommand",
+            ),
+            (
+                {"mode": "whitelist", "subcommands": {"ps": {"unknown": True}}},
+                "unknown field",
+            ),
+            ({"mode": "whitelist", "nested_commands": []}, "non-empty array"),
+            ({"mode": "whitelist", "nested_commands": {}}, "non-empty array"),
+            ({"mode": "whitelist", "nested_commands": ["run"]}, "array of strings"),
+            ({"mode": "whitelist", "nested_commands": [[1]]}, "array of strings"),
+            ({"mode": "whitelist", "nested_commands": [["["]]}, "regular expression"),
+            (
+                {
+                    "mode": "whitelist",
+                    "nested_commands": [["x" * (MAX_PATTERN_LENGTH + 1)]],
+                },
+                "pattern limit",
+            ),
+            (
+                {"mode": "whitelist", "nested_commands": [["run"], ["run"]]},
+                "duplicates",
+            ),
+            ({"mode": "whitelist", "nested_commands": [["x"] * 129]}, "prefix length"),
+            (
+                {
+                    "mode": "whitelist",
+                    "nested_commands": [[str(i)] for i in range(129)],
+                },
+                "prefix limit",
+            ),
+            (
+                {
+                    "mode": "whitelist",
+                    "subcommands": {f"cmd{i}": {} for i in range(129)},
+                },
+                "subcommand limit",
+            ),
+            ({"handler": "curl", "subcommands": {"get": {}}}, "unknown field"),
+            ({"handler": "docker", "mode": "whitelist"}, "supported handler"),
+        )
+        for raw, expected_error in cases:
+            with (
+                self.subTest(raw=raw),
+                self.assertRaisesRegex(ValueError, expected_error),
+            ):
+                policy("probe", raw)
+
+    def test_policy_depth_boundary_and_cyclic_objects(self) -> None:
+        for depth, valid in ((MAX_POLICY_DEPTH, True), (MAX_POLICY_DEPTH + 1, False)):
+            raw: dict[str, object] = {"mode": "whitelist"}
+            for _ in range(depth):
+                raw = {"mode": "whitelist", "subcommands": {"child": raw}}
+            if valid:
+                policy("probe", raw)
+            else:
+                with self.assertRaisesRegex(ValueError, "policy depth"):
+                    policy("probe", raw)
+        cyclic: dict[str, object] = {"mode": "whitelist"}
+        cyclic["subcommands"] = {"loop": cyclic}
+        with self.assertRaisesRegex(ValueError, "policy depth"):
+            policy("probe", cyclic)
+
+    def test_duplicate_subcommands_and_recursive_yaml_fail_startup(self) -> None:
+        cases = (
+            "probe:\n  mode: whitelist\n  subcommands:\n    ps: {}\n    ps: {}\n",
+            "probe: &self\n  mode: whitelist\n  subcommands:\n    loop: *self\n",
+        )
+        for content in cases:
+            with TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                (root / "policy.yaml").write_text(content, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_command_policies(root)
+
+
+class DockerInspectionTests(unittest.TestCase):
+    def test_bundled_inspection_commands_and_flags(self) -> None:
+        docker_policy = policy("docker", raw_policy_file("docker.yaml", "docker"))
+        cases = (
+            (("-h",), True),
+            (("--help",), True),
+            (
+                ("ps", "-a", "--filter", "status=running", "--format", "{{json .}}"),
+                True,
+            ),
+            (("images",), True),
+            (("version", "--format", "{{json .}}"), True),
+            (("info",), True),
+            (("inspect", "--format", "{{json .}}", "web"), True),
+            (("logs", "--tail", "200", "--since", "30m", "--timestamps", "web"), True),
+            (("logs", "--tail=9999", "web"), True),
+            (("stats", "--no-stream"), True),
+            (("stats", "--no-stream", "web", "db"), True),
+            (("top", "web"), True),
+            (("port", "web", "8080/tcp"), True),
+            (("logs", "web"), False),
+            (("logs", "--tail", "10000", "web"), False),
+            (("logs", "--tail", "-1", "web"), False),
+            (("logs", "--tail", "all", "web"), False),
+            (("logs", "--tail", "100", "--follow", "web"), False),
+            (("logs", "--tail", "100", "-f", "web"), False),
+            (("logs", "--tail", "100", "web", "db"), False),
+            (("stats", "web"), False),
+            (("stats", "--no-stream=false", "web"), False),
+            (("ps", "--no-stream"), False),
+            (("ps", "--help"), False),
+            (("rm", "web"), False),
+            (("run", "image"), False),
+            (("--host", "tcp://example:2375", "ps"), False),
+        )
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                accepted, reason = GenericDispatchTests.check(
+                    {"docker": docker_policy}, "docker", *arguments
+                )
+                self.assertEqual(accepted, expected, reason)
 
 
 class SecurityPolicyRegressionTests(unittest.TestCase):
@@ -695,11 +1082,11 @@ class PolicySchemaTests(unittest.TestCase):
             ),
             (
                 {"handler": "docker", "positional_variants": [["ps"]]},
-                "requires mode 'whitelist'",
+                "supported handler",
             ),
             (
                 {"handler": "docker", "mode": "whitelist"},
-                "requires 'positional_variants'",
+                "supported handler",
             ),
             (
                 {
@@ -708,7 +1095,7 @@ class PolicySchemaTests(unittest.TestCase):
                     "positional_variants": [["ps"]],
                     "targets": [{"host": "loopback"}],
                 },
-                "unknown field",
+                "supported handler",
             ),
             ({"mode": "whitelist", "unknown": True}, "unknown field"),
         )
@@ -797,28 +1184,25 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIsNone(flags[2]["value_pattern"])
 
     def test_discovery_explains_policy_validated_docker_exec(self) -> None:
-        policies = dict(DockerHandlerTests.POLICIES)
+        policies = dict(DockerPolicyTests.POLICIES)
         with patch.dict(COMMAND_POLICIES, policies, clear=True):
             raw_result: object = json.loads(ssh_list_allowed_commands())
         result = cast(dict[str, object], raw_result)
         commands = cast(dict[str, object], result["commands"])
         docker = cast(dict[str, object], commands["docker"])
-        self.assertEqual(docker["mode"], "handler:docker")
-        self.assertEqual(docker["handler"], "docker")
-        self.assertIn("positional_variants", docker)
-        exec_info = cast(dict[str, object], docker["docker_exec"])
-        self.assertEqual(
-            exec_info["syntax"],
-            "docker exec <container> <command> [arguments...]",
-        )
-        use_when = cast(str, exec_info["use_when"])
-        self.assertIn("unavailable on the host", use_when)
-        self.assertIn("docker ps", use_when)
-        container = cast(str, exec_info["container"])
-        self.assertIn("accepted by Docker", container)
-        self.assertEqual(exec_info["docker_options"], False)
-        inner_commands = cast(str, exec_info["inner_commands"])
-        self.assertIn("effective command policies", inner_commands)
+        self.assertEqual(docker["mode"], "whitelist")
+        self.assertNotIn("handler", docker)
+        self.assertEqual(docker["nested_commands"], [["exec", "[^-].*"]])
+        subcommands = cast(dict[str, object], docker["subcommands"])
+        stats = cast(dict[str, object], subcommands["stats"])
+        self.assertEqual(stats["required_flags"], ["--no-stream"])
+        contract = cast(dict[str, object], result["pipeline_contract"])
+        self.assertEqual(contract["max_nested_command_depth"], MAX_NESTED_COMMAND_DEPTH)
+        with patch.dict(COMMAND_POLICIES, policies, clear=True):
+            rules = ssh_describe_validation_rules()
+        self.assertIn("POLICIES (live)", rules)
+        self.assertIn('"nested_commands"', rules)
+        self.assertIn("docker exec <container> <command>", rules)
 
     def test_rule_description_and_dry_run_explain_correction_path(self) -> None:
         rules = ssh_describe_validation_rules()

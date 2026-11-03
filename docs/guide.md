@@ -209,11 +209,15 @@ Commands have a 10-second timeout and 50 KB limit per output stream. There is no
 
 ### Docker containers
 
-The default Docker policy permits its inspection commands and `docker exec <container> <command> [arguments...]`. The inner command and arguments must pass the same effective policy used for host commands. Docker exec options and nested Docker commands are rejected; any non-option container name or ID reference is passed to Docker and is not restricted to a configured list.
+The default [Docker policy](../config/policies/docker.yaml) uses generic subcommand and nested-command rules. It allows `docker -h` and `docker --help`, plus inspection through `ps`, `images`, `version`, `info`, `inspect`, `logs`, `stats`, `top`, and `port`. Each subcommand has its own allowed flags; root help flags are not inherited by subcommands.
 
-For example, `docker exec database nodetool status` is accepted only when the effective policy also permits `nodetool status`.
+Useful examples include `docker ps -a --no-trunc`, `docker inspect --format '{{json .}}' web`, `docker logs --tail 200 --since 30m web`, and `docker stats --no-stream`. Logs require an explicit `--tail` from 0 through 9999, and follow mode is not allowed. Stats require `--no-stream` to return one snapshot.
 
-To disable `docker exec` while retaining `docker ps`, `inspect`, `logs`, and the other inspection forms, remove `handler: docker` from [docker.yaml](../config/policies/docker.yaml), leave `mode: whitelist` and `positional_variants` unchanged, and restart the MCP server. Remove the entire Docker command policy to disable all Docker commands.
+The policy also permits `docker exec <container> <command> [arguments...]` when the inner command and arguments pass the same effective policy used for host commands. Any non-empty, non-option container reference is passed to Docker without a configured name allowlist. Exec options are rejected; another nested Docker invocation is rejected by the generic policy-cycle guard. For example, `docker exec database nodetool status` is accepted only when the effective policy also permits `nodetool status`.
+
+To disable `docker exec` while retaining inspection, remove only `nested_commands` from the Docker policy and restart the MCP server. Keep the root help rules and `subcommands` unchanged. Removing the entire Docker command policy disables all Docker commands.
+
+Existing configurations using `handler: docker` must replace that selector with `nested_commands: [["exec", "[^-].*"]]` and move inspection rules into `subcommands`; the old handler selector now stops startup. The bundled Docker policy is a complete migration example. Other flat policies and the curl handler keep their existing syntax and behavior.
 
 ## Agent-facing command format
 
@@ -253,6 +257,23 @@ systemctl:
 Every flag object must contain `value_pattern`. A string requires one value and validates it with a case-sensitive full-string regular-expression match; `null` means the flag accepts no value. The equivalent forms `--flag value` and `--flag=value`, and `-n value` and `-nvalue`, receive the same validation result. Set `allows_flag_bundling: true` only when the command supports combined short flags; the default is `false`.
 
 In whitelist mode, `positional_variants` defines complete allowed positional sequences. Array variants have exact arity. Bounded-rest variants use `args`, `rest_pattern`, `min_rest`, and `max_rest`. Omit `positional_variants` only when unrestricted positional arguments are safe. It is rejected in blacklist and permissive modes because the values of undeclared flags cannot be distinguished reliably from positional arguments.
+
+### Subcommand and nested-command rules
+
+In whitelist mode, `subcommands` maps a leading token to a child policy, which can itself contain further subcommands. Children have independent flags, required flags, and positional rules; no flags or requirements are inherited from the parent. Routing nodes default to no root positionals, and unknown subcommands are rejected. Root flags are used on root invocations such as `docker --help`, not before a subcommand. Ordinary flat policies are unchanged.
+
+`nested_commands` lists regex prefixes preceding another command:
+
+```yaml
+docker:
+  mode: whitelist
+  nested_commands:
+    - ['exec', '[^-].*']
+```
+
+Every pattern matches one entire raw argument, with case-sensitive matching. After `exec` and the container reference, the remaining tokens are validated as a command and its arguments using the effective policies. The split happens before parsing flags. Prefix matching precedes subcommand dispatch; ambiguous matches, missing commands, failed inner validation, and command cycles are rejected without fallback. An empty prefix delegates all arguments but still requires a command. Nesting and subcommand depth are each limited to eight levels. Removing `nested_commands` disables delegation without affecting inspection subcommands.
+
+Use `ssh_list_allowed_commands` for the complete effective policy tree and `ssh_describe_validation_rules` for live routing rules and limits. See [technical design](design.md#subcommands-and-nested-commands) for dispatch order and startup validation.
 
 Policy files are trusted operator configuration and must not come from remote or untrusted sources. They own command names, modes, flags, positional grammars, and handler configuration such as curl targets. Python owns pipeline shape, safe serialization, structural limits, and specialized value-aware handler implementations; these executable checks are not replaceable through YAML.
 

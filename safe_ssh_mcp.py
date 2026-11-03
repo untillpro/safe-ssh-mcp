@@ -21,6 +21,7 @@ commands on remote hosts using SSH with command validation for safety.
 import asyncio
 import ctypes
 import ipaddress
+import json
 import logging
 import os
 import platform
@@ -86,6 +87,9 @@ class CommandPolicy(TypedDict, total=False):
     positional_variants: list[PositionalVariant]
     _compiled_flags: dict[str, re.Pattern[str] | None]
     _compiled_positional_variants: list[CompiledPositionalVariant]
+    subcommands: dict[str, "CommandPolicy"]
+    nested_commands: list[list[str]]
+    _compiled_nested_commands: list[tuple[re.Pattern[str], ...]]
     # Custom-handler policy (see COMMAND_HANDLERS). The named handler owns any
     # command-specific grammar and may compose with the generic policy fields.
     handler: str
@@ -93,14 +97,6 @@ class CommandPolicy(TypedDict, total=False):
     single_request: bool
     targets: list[UrlTarget]
     netrc_file_paths: list[str]
-
-
-class DockerExecInfo(TypedDict):
-    syntax: str
-    use_when: str
-    container: str
-    docker_options: bool
-    inner_commands: str
 
 
 class CommandInfo(TypedDict, total=False):
@@ -113,7 +109,8 @@ class CommandInfo(TypedDict, total=False):
     pattern_matching: str
     handler: str
     targets: list[UrlTarget]
-    docker_exec: DockerExecInfo
+    subcommands: dict[str, "CommandInfo"]
+    nested_commands: list[list[str]]
 
 
 class PipelineContract(TypedDict):
@@ -123,6 +120,8 @@ class PipelineContract(TypedDict):
     max_arguments_per_stage: int
     max_token_characters: int
     max_rendered_utf8_bytes: int
+    max_policy_depth: int
+    max_nested_command_depth: int
     single_command_example: list[CommandStage]
     pipeline_example: list[CommandStage]
 
@@ -307,6 +306,9 @@ MAX_PIPELINE_STAGES = 16
 MAX_ARGUMENTS_PER_STAGE = 128
 MAX_RENDERED_PIPELINE_LENGTH = 64 * 1024
 MAX_SSH_ALIAS_LENGTH = 255
+MAX_POLICY_DEPTH = 8
+MAX_NESTED_COMMAND_DEPTH = 8
+MAX_POLICY_BRANCHES = 128
 
 SSH_CONFIG_PATH = Path.home() / ".ssh" / "config"
 KNOWN_HOSTS_PATH = Path.home() / ".ssh" / "known_hosts"
@@ -320,6 +322,8 @@ _GENERIC_POLICY_FIELDS = frozenset(
         "require_flags",
         "allows_flag_bundling",
         "positional_variants",
+        "subcommands",
+        "nested_commands",
     }
 )
 _CURL_HANDLER_POLICY_FIELDS = frozenset(
@@ -334,10 +338,8 @@ _CURL_HANDLER_POLICY_FIELDS = frozenset(
         "netrc_file_paths",
     }
 )
-_DOCKER_HANDLER_POLICY_FIELDS = _GENERIC_POLICY_FIELDS | {"handler"}
 _HANDLER_POLICY_FIELDS: dict[str, frozenset[str]] = {
     "curl": _CURL_HANDLER_POLICY_FIELDS,
-    "docker": _DOCKER_HANDLER_POLICY_FIELDS,
 }
 _POSITIONAL_REST_FIELDS = frozenset({"args", "rest_pattern", "min_rest", "max_rest"})
 _TARGET_FIELDS = frozenset({"scheme", "host", "port", "path_prefix"})
@@ -646,9 +648,13 @@ def _normalize_targets(raw_targets: object, context: str) -> list[UrlTarget]:
 
 
 def _normalize_command_policy(
-    cmd_name: str, raw_config: object, source: str
+    cmd_name: str, raw_config: object, source: str, *, depth: int = 0
 ) -> CommandPolicy:
     context = _policy_context(source, cmd_name)
+    if depth > MAX_POLICY_DEPTH:
+        raise ValueError(
+            f"{context} exceeds the {MAX_POLICY_DEPTH}-level policy depth limit"
+        )
     if not isinstance(raw_config, dict):
         raise ValueError(f"{context} must be an object")
     config_data: dict[object, object] = cast(dict[object, object], raw_config)
@@ -659,7 +665,7 @@ def _normalize_command_policy(
     ):
         raise ValueError(f"{context} field 'handler' must name a supported handler")
     is_handler = isinstance(raw_handler, str)
-    uses_generic_policy = not is_handler or raw_handler == "docker"
+    uses_generic_policy = not is_handler
     allowed_fields = (
         _HANDLER_POLICY_FIELDS[raw_handler]
         if isinstance(raw_handler, str)
@@ -681,8 +687,6 @@ def _normalize_command_policy(
                 f"{context} field 'mode' must be permissive, blacklist, or whitelist"
             )
         normalized["mode"] = raw_mode
-        if raw_handler == "docker" and raw_mode != "whitelist":
-            raise ValueError(f"{context} handler 'docker' requires mode 'whitelist'")
 
     raw_flags = config_data.get("flags", [])
     flags, compiled_flags = _normalize_flags(raw_flags, context)
@@ -727,8 +731,74 @@ def _normalize_command_policy(
         normalized["positional_variants"] = variants
         normalized["_compiled_positional_variants"] = compiled_variants
 
-    if raw_handler == "docker" and "positional_variants" not in config_data:
-        raise ValueError(f"{context} handler 'docker' requires 'positional_variants'")
+    for field in ("subcommands", "nested_commands"):
+        if field in config_data and normalized.get("mode") != "whitelist":
+            raise ValueError(f"{context} may use '{field}' only in whitelist mode")
+
+    if "subcommands" in config_data:
+        raw_subcommands = config_data["subcommands"]
+        if not isinstance(raw_subcommands, dict) or not raw_subcommands:
+            raise ValueError(
+                f"{context} field 'subcommands' must be a non-empty object"
+            )
+        subcommand_data: dict[object, object] = cast(
+            dict[object, object], raw_subcommands
+        )
+        if len(subcommand_data) > MAX_POLICY_BRANCHES:
+            raise ValueError(
+                f"{context} exceeds the {MAX_POLICY_BRANCHES}-subcommand limit"
+            )
+        subcommands: dict[str, CommandPolicy] = {}
+        for name, child in subcommand_data.items():
+            if (
+                not isinstance(name, str)
+                or len(name) > MAX_POLICY_TOKEN_LENGTH
+                or re.fullmatch(r"[A-Za-z0-9_.+][A-Za-z0-9_.+-]*", name) is None
+            ):
+                raise ValueError(f"{context} has an invalid subcommand name {name!r}")
+            subcommands[name] = _normalize_command_policy(
+                f"{cmd_name} {name}", child, source, depth=depth + 1
+            )
+        normalized["subcommands"] = subcommands
+
+    if "nested_commands" in config_data:
+        raw_prefixes = config_data["nested_commands"]
+        if not isinstance(raw_prefixes, list) or not raw_prefixes:
+            raise ValueError(
+                f"{context} field 'nested_commands' must be a non-empty array"
+            )
+        prefix_values: list[object] = cast(list[object], raw_prefixes)
+        if len(prefix_values) > MAX_POLICY_BRANCHES:
+            raise ValueError(
+                f"{context} exceeds the {MAX_POLICY_BRANCHES}-prefix limit"
+            )
+        prefixes: list[list[str]] = []
+        compiled_prefixes: list[tuple[re.Pattern[str], ...]] = []
+        for index, raw_prefix in enumerate(prefix_values):
+            prefix_context = f"{context} nested_commands[{index}]"
+            prefix = _normalize_string_list(raw_prefix, "prefix", prefix_context)
+            if len(prefix) > MAX_ARGUMENTS_PER_STAGE:
+                raise ValueError(f"{prefix_context} exceeds the prefix length limit")
+            if prefix in prefixes:
+                raise ValueError(f"{prefix_context} duplicates a nested command prefix")
+            prefixes.append(prefix)
+            compiled_prefixes.append(
+                tuple(
+                    _compile_policy_pattern(
+                        pattern, f"{prefix_context}[{pattern_index}]"
+                    )
+                    for pattern_index, pattern in enumerate(prefix)
+                )
+            )
+        normalized["nested_commands"] = prefixes
+        normalized["_compiled_nested_commands"] = compiled_prefixes
+
+    if (
+        "subcommands" in config_data or "nested_commands" in config_data
+    ) and "positional_variants" not in config_data:
+        # Routing policies must not inherit the flat whitelist's unrestricted operands.
+        normalized["positional_variants"] = [[]]
+        normalized["_compiled_positional_variants"] = [((), None, 0, 0)]
 
     if raw_handler == "curl":
         raw_require_first = config_data.get("require_first")
@@ -786,8 +856,8 @@ def _normalize_command_policy(
 #   - whitelist:  command has flags that write/extract/execute, only safe
 #                 flags are listed explicitly
 #   - handler:    generic flag/positional validation is insufficient; a
-#                 command-specific Python handler inspects values (curl) or
-#                 delegates nested grammar back to the policy engine (docker)
+#                 command-specific Python handler inspects values (curl)
+#   - routing:    subcommands and nested_commands reuse the policy engine
 #   - REMOVED:    commands with internal exec/write that flag validation
 #                 cannot catch (awk: system(), sed: e/w commands)
 #
@@ -1293,64 +1363,10 @@ def _validate_curl(
     return True, "OK"
 
 
-def _docker_allowed_summary() -> str:
-    """Describe the policy-validated docker exec form."""
-    return (
-        "When a diagnostic command is unavailable on the host, use docker ps "
-        "to identify the relevant container, then use this allowed syntax: "
-        "docker exec <container> <command> "
-        "[arguments...]. The container may be any non-option name or ID reference "
-        "accepted by Docker; Docker exec options and nested Docker commands are "
-        "not allowed; the inner command and arguments must pass their effective "
-        "command policy."
-    )
-
-
-def _validate_docker(
-    arguments: list[str], config: CommandPolicy, cmd_name: str
-) -> tuple[bool, str]:
-    """Validate Docker inspection or one policy-validated container command."""
-    if not arguments or arguments[0] != "exec":
-        return _validate_generic_command(arguments, config, cmd_name)
-
-    def reject(message: str) -> tuple[bool, str]:
-        return (
-            False,
-            (
-                f"Command '{cmd_name}' was rejected and not executed: {message}. "
-                f"{_docker_allowed_summary()}"
-            ),
-        )
-
-    if len(arguments) < 2:
-        return reject("docker exec requires a container")
-    container = arguments[1]
-    if not container:
-        return reject("docker exec requires a non-empty container")
-    if container.startswith("-"):
-        return reject(f"Docker exec options are not allowed: {container!r}")
-    if len(arguments) < 3:
-        return reject("docker exec requires an inner command")
-
-    inner_command = arguments[2]
-    inner_arguments = arguments[3:]
-    safe, message = _validate_command_stage(
-        inner_command,
-        inner_arguments,
-        allow_docker_handler=False,
-    )
-    if not safe:
-        return reject(
-            f"inner command {inner_command!r} failed policy validation: {message}"
-        )
-    return True, "OK"
-
-
 CommandHandler = Callable[[list[str], CommandPolicy, str], tuple[bool, str]]
 
 COMMAND_HANDLERS: dict[str, CommandHandler] = {
     "curl": _validate_curl,
-    "docker": _validate_docker,
 }
 
 
@@ -1592,7 +1608,7 @@ def _validate_command_stage(
     cmd_name: str,
     arguments: list[str],
     *,
-    allow_docker_handler: bool = True,
+    active_commands: tuple[str, ...] = (),
 ) -> tuple[bool, str]:
     """Validate one command stage against the complete effective policy."""
     if cmd_name not in COMMAND_POLICIES:
@@ -1601,18 +1617,32 @@ def _validate_command_stage(
             f"Command '{cmd_name}' was rejected and not executed because it is not allowed in safe mode. Safe mode allows {len(COMMAND_POLICIES)} read-only commands.",
         )
 
+    if cmd_name in active_commands:
+        return _generic_rejection(
+            cmd_name, "nested command policy cycle is not allowed"
+        )
+    if len(active_commands) > MAX_NESTED_COMMAND_DEPTH:
+        return _generic_rejection(
+            cmd_name, f"nested command depth exceeds {MAX_NESTED_COMMAND_DEPTH}"
+        )
+
     try:
         config = _ensure_compiled_policy(cmd_name, COMMAND_POLICIES[cmd_name])
     except ValueError as error:
         return False, str(error)
 
+    return _validate_policy(cmd_name, arguments, config, (*active_commands, cmd_name))
+
+
+def _validate_policy(
+    cmd_name: str,
+    arguments: list[str],
+    config: CommandPolicy,
+    active_commands: tuple[str, ...],
+) -> tuple[bool, str]:
+    """Dispatch a policy before parsing flags owned by a selected child command."""
     handler_name = config.get("handler")
     if handler_name:
-        if handler_name == "docker" and not allow_docker_handler:
-            return (
-                False,
-                f"Command '{cmd_name}' was rejected and not executed because nested Docker handler invocation is not allowed",
-            )
         handler = COMMAND_HANDLERS.get(handler_name)
         if handler is None:
             return (
@@ -1621,6 +1651,45 @@ def _validate_command_stage(
             )
         return handler(arguments, config, cmd_name)
 
+    matches = [
+        prefix
+        for prefix in config.get("_compiled_nested_commands", [])
+        if len(arguments) >= len(prefix)
+        and all(
+            pattern.fullmatch(token) is not None
+            for pattern, token in zip(prefix, arguments)
+        )
+    ]
+    if len(matches) > 1:
+        return _generic_rejection(cmd_name, "ambiguous nested command prefixes")
+    if matches:
+        boundary = len(matches[0])
+        if len(arguments) == boundary or not arguments[boundary]:
+            return _generic_rejection(
+                cmd_name, "matched prefix requires a nested command"
+            )
+        inner_command = arguments[boundary]
+        safe, reason = _validate_command_stage(
+            inner_command, arguments[boundary + 1 :], active_commands=active_commands
+        )
+        if not safe:
+            return _generic_rejection(
+                cmd_name,
+                f"nested command {inner_command!r} failed policy validation: {reason}",
+            )
+        return True, "OK"
+
+    subcommands = config.get("subcommands", {})
+    if arguments and arguments[0] in subcommands:
+        subcommand = arguments[0]
+        return _validate_policy(
+            f"{cmd_name} {subcommand}",
+            arguments[1:],
+            subcommands[subcommand],
+            active_commands,
+        )
+    if subcommands and arguments and not arguments[0].startswith("-"):
+        return _generic_rejection(cmd_name, f"unknown subcommand {arguments[0]!r}")
     return _validate_generic_command(arguments, config, cmd_name)
 
 
@@ -2256,6 +2325,39 @@ async def ssh_test_connection(host: str) -> str:
     return await test_connection(host)
 
 
+def _describe_command_policy(config: CommandPolicy) -> CommandInfo:
+    """Describe a policy tree without compiled patterns or command-specific metadata."""
+    handler_name = config.get("handler")
+    info: CommandInfo = {
+        "mode": f"handler:{handler_name}"
+        if handler_name
+        else config.get("mode", "permissive"),
+        "allows_flag_bundling": config.get("allows_flag_bundling", False),
+        "pattern_matching": "case-sensitive full-string",
+    }
+    if handler_name:
+        info["handler"] = handler_name
+    if "flags" in config:
+        if config.get("mode") == "blacklist":
+            info["blocked_flags"] = config["flags"]
+        else:
+            info["allowed_flags"] = config["flags"]
+    if "require_flags" in config:
+        info["required_flags"] = config["require_flags"]
+    if "targets" in config:
+        info["targets"] = config["targets"]
+    if "positional_variants" in config:
+        info["positional_variants"] = config["positional_variants"]
+    if "nested_commands" in config:
+        info["nested_commands"] = config["nested_commands"]
+    if "subcommands" in config:
+        info["subcommands"] = {
+            name: _describe_command_policy(child)
+            for name, child in sorted(config["subcommands"].items())
+        }
+    return info
+
+
 @mcp.tool()
 def ssh_list_allowed_commands() -> str:
     """
@@ -2263,8 +2365,6 @@ def ssh_list_allowed_commands() -> str:
     Patterns use case-sensitive full-string matching. Use this before constructing
     a structured pipeline, then use ssh_validate_command for a dry run.
     """
-    import json
-
     result: AllowedCommands = {
         "total_commands": len(COMMAND_POLICIES),
         "pipeline_contract": {
@@ -2274,6 +2374,8 @@ def ssh_list_allowed_commands() -> str:
             "max_arguments_per_stage": MAX_ARGUMENTS_PER_STAGE,
             "max_token_characters": MAX_POLICY_TOKEN_LENGTH,
             "max_rendered_utf8_bytes": MAX_RENDERED_PIPELINE_LENGTH,
+            "max_policy_depth": MAX_POLICY_DEPTH,
+            "max_nested_command_depth": MAX_NESTED_COMMAND_DEPTH,
             "single_command_example": [{"command": "uptime", "arguments": []}],
             "pipeline_example": [
                 {
@@ -2288,59 +2390,7 @@ def ssh_list_allowed_commands() -> str:
 
     for cmd_name, stored_config in sorted(COMMAND_POLICIES.items()):
         config = _ensure_compiled_policy(cmd_name, stored_config)
-        if "handler" in config:
-            handler_name = config["handler"]
-            handler_info: CommandInfo = {
-                "mode": f"handler:{handler_name}",
-                "handler": handler_name,
-            }
-            if "flags" in config:
-                handler_info["allowed_flags"] = config["flags"]
-            if "require_flags" in config:
-                handler_info["required_flags"] = config["require_flags"]
-            if "targets" in config:
-                handler_info["targets"] = config["targets"]
-            if "positional_variants" in config:
-                handler_info["positional_variants"] = config["positional_variants"]
-            if handler_name == "docker":
-                handler_info["docker_exec"] = {
-                    "syntax": "docker exec <container> <command> [arguments...]",
-                    "use_when": (
-                        "a diagnostic command is unavailable on the host and the relevant executable is available in a running container identified with docker ps"
-                    ),
-                    "container": (
-                        "any non-option container name or ID reference accepted by Docker"
-                    ),
-                    "docker_options": False,
-                    "inner_commands": (
-                        "all effective command policies except handler:docker"
-                    ),
-                }
-            handler_info["allows_flag_bundling"] = config.get(
-                "allows_flag_bundling", False
-            )
-            handler_info["pattern_matching"] = "case-sensitive full-string"
-            result["commands"][cmd_name] = handler_info
-            continue
-
-        cmd_info: CommandInfo = {
-            "mode": config.get("mode", "permissive"),
-            "allows_flag_bundling": config.get("allows_flag_bundling", False),
-            "pattern_matching": "case-sensitive full-string",
-        }
-
-        if "flags" in config:
-            if config.get("mode", "permissive") == "blacklist":
-                cmd_info["blocked_flags"] = config["flags"]
-            else:
-                cmd_info["allowed_flags"] = config["flags"]
-
-        if "require_flags" in config:
-            cmd_info["required_flags"] = config["require_flags"]
-        if "positional_variants" in config:
-            cmd_info["positional_variants"] = config["positional_variants"]
-
-        result["commands"][cmd_name] = cmd_info
+        result["commands"][cmd_name] = _describe_command_policy(config)
 
     return json.dumps(result, indent=2)
 
@@ -2390,11 +2440,21 @@ POLICY PATTERN SEMANTICS:
 - Policies are trusted operator configuration and must not come from remote or untrusted sources.
 - Invalid policy schemas and patterns stop server startup.
 
+SUBCOMMANDS AND NESTED COMMANDS:
+- subcommands and nested_commands are available only in whitelist policies.
+- Match nested_commands prefixes against raw tokens before selecting a subcommand or parsing flags.
+- Prefix length determines where the nested command starts; its policy owns all remaining flags.
+- A missing nested command, ambiguous prefix, rejected inner command, or policy cycle is rejected without fallback.
+- At most {MAX_NESTED_COMMAND_DEPTH} nested command levels and {MAX_POLICY_DEPTH} subcommand levels are allowed.
+- Subcommand policies have independent flags and requirements; root flags are not inherited.
+- Unknown subcommands are rejected; routing policies default to no root positionals.
+- When a command is unavailable on the host, Docker container inspection and nested execution may be available in the effective policy: use docker ps, then docker exec <container> <command> [arguments...].
+
 VALIDATION MODES:
 1. PERMISSIVE MODE allows all arguments for commands whose complete grammar is read-only.
 2. WHITELIST MODE allows only declared flags and optional positional variants.
 3. BLACKLIST MODE allows arguments except specifically blocked dangerous flags.
-4. HANDLER MODE uses a command-specific validator for value-sensitive or nested command grammar such as curl and docker exec.
+4. HANDLER MODE uses a command-specific validator for value-sensitive grammar such as curl.
 
 REMOVED COMMANDS (internal exec/write that flag validation cannot catch):
 - awk: system() executes commands, print>"file" writes, print|"cmd" pipes
@@ -2432,9 +2492,14 @@ To test a pipeline before execution, use ssh_validate_command.
     if curl_config and curl_config.get("handler") == "curl":
         rules += f"\nCURL POLICY (live):\n{_curl_allowed_summary(curl_config)}\n"
 
-    docker_config = COMMAND_POLICIES.get("docker")
-    if docker_config and docker_config.get("handler") == "docker":
-        rules += f"\nDOCKER POLICY (live):\n{_docker_allowed_summary()}\n"
+    routed_policies: dict[str, CommandInfo] = {}
+    for name, stored_config in sorted(COMMAND_POLICIES.items()):
+        config = _ensure_compiled_policy(name, stored_config)
+        if "subcommands" in config or "nested_commands" in config:
+            routed_policies[name] = _describe_command_policy(config)
+    if routed_policies:
+        rules += "\nSUBCOMMAND AND NESTED COMMAND POLICIES (live):\n"
+        rules += json.dumps(routed_policies, indent=2) + "\n"
 
     return rules
 
