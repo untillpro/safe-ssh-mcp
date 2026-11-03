@@ -4,9 +4,9 @@ Perform a best-effort, point-in-time operational health assessment of the reques
 
 ## Execution contract
 
-1. Call `ssh_list_allowed_commands` before constructing commands. Treat its current output as authoritative.
-2. Use `ssh_validate_command` when uncertain about a command or pipeline. Do not work around a rejection.
-3. The examples below use shell notation for readability. For `ssh_execute`, submit each command as a structured `{command, arguments}` stage and convert each `|`-separated segment into an ordered pipeline stage.
+1. Call `safe_ssh_list_allowed_commands` for available command names, then `safe_ssh_get_command_rules` with the selected names before constructing commands. Treat the returned rules as authoritative.
+2. Use `safe_ssh_validate_command` when uncertain about a command or pipeline. Do not work around a rejection.
+3. The examples below use shell notation for readability. For `safe_ssh_execute`, submit each command as a structured `{command, arguments}` stage and convert each `|`-separated segment into an ordered pipeline stage.
 4. Keep checks bounded. Do not use interactive, continuous, recursive whole-filesystem, or follow-mode operations.
 5. If a command is unavailable, a file does not exist, permission is denied, output is truncated, or a check times out, record the check as not assessed with the reason. Do not use `sudo` or substitute a broader command.
 6. Do not change the host. Recommendations are advice only and must not be executed.

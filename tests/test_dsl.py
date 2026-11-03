@@ -36,9 +36,9 @@ from safe_ssh_mcp import (
     initialize_command_policies,
     load_command_policies,
     render_pipeline,
-    ssh_describe_validation_rules,
-    ssh_list_allowed_commands,
-    ssh_validate_command,
+    safe_ssh_describe_validation_rules,
+    safe_ssh_get_command_rules,
+    safe_ssh_validate_command,
     validate_pipeline,
 )
 
@@ -623,8 +623,8 @@ class GenericDispatchTests(unittest.TestCase):
             },
         )
         with patch.dict(COMMAND_POLICIES, {"probe": router}, clear=True):
-            result: object = json.loads(ssh_list_allowed_commands())
-            rules = ssh_describe_validation_rules()
+            result: object = json.loads(safe_ssh_get_command_rules(["probe"]))
+            rules = safe_ssh_describe_validation_rules()
         commands = cast(dict[str, object], cast(dict[str, object], result)["commands"])
         probe = cast(dict[str, object], commands["probe"])
         service = cast(
@@ -634,7 +634,7 @@ class GenericDispatchTests(unittest.TestCase):
             dict[str, object], cast(dict[str, object], service["subcommands"])["run"]
         )
         self.assertEqual(run["nested_commands"], [["web"]])
-        self.assertIn('"probe"', rules)
+        self.assertNotIn('"probe"', rules)
         self.assertNotIn("_compiled", json.dumps(result))
 
 
@@ -740,7 +740,7 @@ class ExplicitPolicyModeTests(unittest.TestCase):
                 with self.subTest(arguments=arguments):
                     accepted, reason = validate_pipeline(single("probe", *arguments))
                     self.assertEqual(accepted, expected, reason)
-            raw_result: object = json.loads(ssh_list_allowed_commands())
+            raw_result: object = json.loads(safe_ssh_get_command_rules(["probe"]))
         result = cast(dict[str, object], raw_result)
         commands = cast(dict[str, object], result["commands"])
         probe = cast(dict[str, object], commands["probe"])
@@ -1094,7 +1094,7 @@ class DockerManagementInspectionTests(unittest.TestCase):
         with patch.dict(
             COMMAND_POLICIES, {"docker": DockerPolicyTests.DOCKER_POLICY}, clear=True
         ):
-            raw_result: object = json.loads(ssh_list_allowed_commands())
+            raw_result: object = json.loads(safe_ssh_get_command_rules(["docker"]))
         result = cast(dict[str, object], raw_result)
         commands = cast(dict[str, object], result["commands"])
         docker = cast(dict[str, object], commands["docker"])
@@ -1504,7 +1504,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_discovery_exposes_effective_syntax(self) -> None:
         report_policy = FlagNormalizationTests.REPORT_POLICY
         with patch.dict(COMMAND_POLICIES, {"report": report_policy}, clear=True):
-            raw_result: object = json.loads(ssh_list_allowed_commands())
+            raw_result: object = json.loads(safe_ssh_get_command_rules(["report"]))
         self.assertIsInstance(raw_result, dict)
         result = cast(dict[str, object], raw_result)
         contract = cast(dict[str, object], result["pipeline_contract"])
@@ -1521,7 +1521,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_discovery_explains_policy_validated_docker_exec(self) -> None:
         policies = dict(DockerPolicyTests.POLICIES)
         with patch.dict(COMMAND_POLICIES, policies, clear=True):
-            raw_result: object = json.loads(ssh_list_allowed_commands())
+            raw_result: object = json.loads(safe_ssh_get_command_rules(["docker"]))
         result = cast(dict[str, object], raw_result)
         commands = cast(dict[str, object], result["commands"])
         docker = cast(dict[str, object], commands["docker"])
@@ -1534,24 +1534,24 @@ class DiscoveryTests(unittest.TestCase):
         contract = cast(dict[str, object], result["pipeline_contract"])
         self.assertEqual(contract["max_nested_command_depth"], MAX_NESTED_COMMAND_DEPTH)
         with patch.dict(COMMAND_POLICIES, policies, clear=True):
-            rules = ssh_describe_validation_rules()
-        self.assertIn("POLICIES (live)", rules)
-        self.assertIn('"nested_commands"', rules)
-        self.assertIn("docker exec <container> <command>", rules)
+            rules = safe_ssh_describe_validation_rules()
+        self.assertNotIn("POLICIES (live)", rules)
+        self.assertNotIn('"nested_commands"', rules)
+        self.assertIn("own effective policy", rules)
 
     def test_rule_description_and_dry_run_explain_correction_path(self) -> None:
-        rules = ssh_describe_validation_rules()
+        rules = safe_ssh_describe_validation_rules()
         self.assertIn("case-sensitive full-string matching", rules)
         self.assertIn("allows_flag_bundling", rules)
         self.assertIn("positional_variants", rules)
-        self.assertIn("Security status", rules)
+        self.assertIn("policy acceptance only", rules)
 
         with patch.dict(
             COMMAND_POLICIES,
             {"report": FlagNormalizationTests.REPORT_POLICY},
             clear=True,
         ):
-            result = ssh_validate_command(
+            result = safe_ssh_validate_command(
                 single("report", "--format", "xml", "--limit", "250", "--no-pager")
             )
         self.assertIn("INVALID", result)

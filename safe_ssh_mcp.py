@@ -108,7 +108,11 @@ class CommandInfo(TypedDict, total=False):
     positional_variants: list[PositionalVariant]
     pattern_matching: str
     handler: str
+    require_first: str
+    single_request: bool
     targets: list[UrlTarget]
+    netrc_file_paths: list[str]
+    handler_rules: list[str]
     subcommands: dict[str, "CommandInfo"]
     nested_commands: list[list[str]]
 
@@ -128,6 +132,10 @@ class PipelineContract(TypedDict):
 
 class AllowedCommands(TypedDict):
     total_commands: int
+    commands: list[str]
+
+
+class CommandRules(TypedDict):
     pipeline_contract: PipelineContract
     commands: dict[str, CommandInfo]
 
@@ -2281,10 +2289,15 @@ mcp: MCPServer[None] = MCPServer("safe-ssh-mcp", lifespan=_mcp_lifespan)
 
 # Tools raise ToolError so the agent sees why a call failed (rejected command,
 # timeout, connection error). mcp v2 hides the message of any other exception.
+_COMMAND_DISCOVERY_HINT = (
+    "Use safe_ssh_list_allowed_commands for command names, then safe_ssh_get_command_rules "
+    "with the relevant names for their flag and positional rules. "
+    "Use safe_ssh_describe_validation_rules for shared validation semantics."
+)
 
 
 @mcp.tool()
-def ssh_list_hosts() -> str:
+def safe_ssh_list_hosts() -> str:
     """
     List best-effort concrete Host entries found directly in ~/.ssh/config.
     The result can omit included aliases and does not restrict connection targets.
@@ -2297,23 +2310,30 @@ def ssh_list_hosts() -> str:
 
 
 @mcp.tool()
-async def ssh_execute(host: str, pipeline: list[CommandStage]) -> str:
+async def safe_ssh_execute(host: str, pipeline: list[CommandStage]) -> str:
     """
-    Execute ordered command stages on a remote host. Use one stage for a single
-    command. Each stage has command and arguments fields; do not send shell text.
-    Every stage is validated for safety - only read-only operations are allowed.
+    Inspect and diagnose remote hosts over SSH using policy-approved read-only
+    commands. Every pipeline is validated before execution. Use one stage for a
+    single command. Each stage has command and arguments fields; do not send shell text.
     curl is restricted to a single GET to allowlisted targets (loopback only by
     default). When a diagnostic command is unavailable on the host and Docker
     support is enabled, use docker ps to identify the relevant container, then use
     docker exec <container> <command> [arguments...]. The inner command must pass
     its effective policy; Docker exec options and nested Docker commands are not
-    allowed. A rejected stage replies with the exact allowed pattern, or call
-    ssh_describe_validation_rules for the full rules.
+    allowed. Use safe_ssh_list_allowed_commands for command names, then fetch rules
+    for the relevant names with safe_ssh_get_command_rules (include inner commands
+    when using nested execution). Optionally use safe_ssh_validate_command for a
+    policy dry run; safe_ssh_describe_validation_rules explains shared validation semantics.
     """
     try:
         stdout, stderr, exit_code = await execute_ssh_command(host, pipeline)
     except Exception as e:
-        raise ToolError(str(e)) from e
+        message = str(e)
+        if isinstance(e, ValueError) and message.startswith(
+            "Command pipeline rejected:"
+        ):
+            message += f"\n\n{_COMMAND_DISCOVERY_HINT}"
+        raise ToolError(message) from e
 
     result = (
         "Exit status: unavailable (command stopped after output limit)\n\n"
@@ -2329,13 +2349,13 @@ async def ssh_execute(host: str, pipeline: list[CommandStage]) -> str:
 
 
 @mcp.tool()
-async def ssh_test_connection(host: str) -> str:
+async def safe_ssh_test_connection(host: str) -> str:
     """Test SSH connection to host"""
     return await test_connection(host)
 
 
 def _describe_command_policy(config: CommandPolicy) -> CommandInfo:
-    """Describe a policy tree without compiled patterns or command-specific metadata."""
+    """Describe effective policy rules without exposing compiled patterns."""
     handler_name = config.get("handler")
     mode = config.get("mode")
     if handler_name:
@@ -2358,6 +2378,29 @@ def _describe_command_policy(config: CommandPolicy) -> CommandInfo:
         info["required_flags"] = config["require_flags"]
     if "targets" in config:
         info["targets"] = config["targets"]
+    if handler_name == "curl":
+        if "require_first" in config:
+            info["require_first"] = config["require_first"]
+        info["single_request"] = config.get("single_request", True)
+        info["targets"] = config.get("targets", [])
+        info["netrc_file_paths"] = config.get("netrc_file_paths") or list(
+            _DEFAULT_NETRC_PATHS
+        )
+        info["allows_flag_bundling"] = False
+        info["handler_rules"] = [
+            "At least one URL is required; single_request limits an invocation to one URL.",
+            "Each URL must be absolute and match the configured scheme, host, port, and path targets.",
+            "An omitted or '*' target scheme allows HTTP/HTTPS; omitted or '*' port and path_prefix allow any port and path.",
+            "Embedded URL credentials and URL glob patterns are rejected.",
+            "Only exact declared flags are accepted; value-taking flags accept separate values or --flag=value, without short bundles or attached short values.",
+            "--max-time and --connect-timeout require positive numeric values.",
+            "--data-urlencode accepts literal values; file-input forms are rejected.",
+            "--netrc-file must match both its value_pattern and an allowed netrc_file_paths entry.",
+        ]
+        if "--noproxy" in config.get("require_flags", []):
+            info["handler_rules"].append(
+                "Required --noproxy must have the literal value '*'."
+            )
     if "positional_variants" in config:
         info["positional_variants"] = config["positional_variants"]
     if "nested_commands" in config:
@@ -2371,14 +2414,52 @@ def _describe_command_policy(config: CommandPolicy) -> CommandInfo:
 
 
 @mcp.tool()
-def ssh_list_allowed_commands() -> str:
+def safe_ssh_list_allowed_commands() -> str:
     """
-    List allowed commands and their effective flag and positional syntax as JSON.
-    Patterns use case-sensitive full-string matching. Use this before constructing
-    a structured pipeline, then use ssh_validate_command for a dry run.
+    List sorted top-level command names and their total count as a small JSON index.
+    Call safe_ssh_get_command_rules with the relevant names to fetch their complete rules
+    before constructing a pipeline. This tool does not connect to SSH hosts.
     """
     result: AllowedCommands = {
         "total_commands": len(COMMAND_POLICIES),
+        "commands": sorted(COMMAND_POLICIES),
+    }
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def safe_ssh_get_command_rules(commands: list[str]) -> str:
+    """
+    Fetch complete rules and the pipeline contract for selected top-level command
+    names in one JSON response. Use safe_ssh_list_allowed_commands to discover names.
+    Pass a non-empty list of exact names, for example ["docker", "grep", "jq"].
+    Duplicate names are returned once; empty or unknown names reject the request.
+    Each result includes its full subcommand tree and handler constraints. Include
+    inner command names when planning nested execution. No SSH connection is made;
+    optionally use safe_ssh_validate_command to check the resulting pipeline.
+    """
+    raw_commands: object = commands
+    if not isinstance(raw_commands, list) or not raw_commands:
+        raise ToolError(
+            "commands must be a non-empty list of exact top-level command names."
+        )
+    values = cast(list[object], raw_commands)
+    requested: list[str] = []
+    for name in values:
+        if not isinstance(name, str) or not name.strip():
+            raise ToolError(
+                "Each commands item must be a non-empty command name string."
+            )
+        if name not in requested:
+            requested.append(name)
+    unknown = [name for name in requested if name not in COMMAND_POLICIES]
+    if unknown:
+        names = ", ".join(repr(name) for name in unknown)
+        raise ToolError(
+            f"Unknown command name(s): {names}. Use safe_ssh_list_allowed_commands for exact top-level names."
+        )
+
+    result: CommandRules = {
         "pipeline_contract": {
             "parameter": "pipeline",
             "stage_fields": ["command", "arguments"],
@@ -2400,141 +2481,58 @@ def ssh_list_allowed_commands() -> str:
         "commands": {},
     }
 
-    for cmd_name, stored_config in sorted(COMMAND_POLICIES.items()):
-        config = _ensure_compiled_policy(cmd_name, stored_config)
-        result["commands"][cmd_name] = _describe_command_policy(config)
+    try:
+        for cmd_name in requested:
+            config = _ensure_compiled_policy(cmd_name, COMMAND_POLICIES[cmd_name])
+            result["commands"][cmd_name] = _describe_command_policy(config)
+    except ValueError as error:
+        raise ToolError(str(error)) from error
 
     return json.dumps(result, indent=2)
 
 
 @mcp.tool()
-def ssh_describe_validation_rules() -> str:
+def safe_ssh_describe_validation_rules() -> str:
     """
-    Describe the command validation rules and security restrictions.
-    Explains what types of commands and operations are blocked and why.
+    Explain shared execution and pattern-matching semantics.
+    Fetch command policies and pipeline limits with safe_ssh_get_command_rules.
     """
-    rules = f"""SSH MCP Server - Command Validation Rules
-
-THREAT MODEL:
-Prevent system MODIFICATION and data EXFILTRATION via network.
-Users already have SSH access, so reading files/system info is acceptable.
-
-STRUCTURED PIPELINE INPUT:
-- ssh_execute and ssh_validate_command accept a pipeline JSON array.
-- Every stage contains exactly command (string) and arguments (array of strings).
-- A single command is represented by a one-stage pipeline.
-- The server validates every stage, quotes it with shlex.join, and inserts only | between stages.
-- Arguments are literal values. Shell operators inside arguments are quoted and cannot add syntax.
-- Redirections, command lists, substitutions, expansions, glob syntax, and background execution have no structured representation.
-- SSH uses the account's configured remote shell. The exit code is the final stage's exit code.
-- Limits: {MAX_PIPELINE_STAGES} stages, {MAX_ARGUMENTS_PER_STAGE} arguments per stage, {MAX_POLICY_TOKEN_LENGTH} characters per token, and {MAX_RENDERED_PIPELINE_LENGTH} rendered UTF-8 bytes.
-
-BLOCKED OPERATIONS:
-- File modification commands (rm, mv, cp, touch, mkdir, chmod, chown)
-- Network exfiltration commands (wget, ssh, scp, rsync)
-- curl to any host except configured allowlisted targets (handler mode)
-- Process control (kill, pkill, sudo, su)
-- Command execution via flags (find -exec, find -delete)
-- Archive extraction (tar -x, unzip without -l) -- creates files
-- Any command not declared by the command policy
-
-POLICY PATTERN SEMANTICS:
-- Every generic command and subcommand must explicitly declare mode; there is no default or inheritance.
-- Handler policies declare handler instead of mode.
-- Every flag is an object containing flag and value_pattern.
-- value_pattern: null means the flag accepts no value.
-- A regular-expression value_pattern means the flag requires exactly one value.
-- All regular expressions use case-sensitive full-string matching.
-- --flag=value and --flag value are equivalent for value-taking long flags.
-- -n100 and -n 100 are equivalent when -n has a value_pattern.
-- Short-flag bundling is accepted only when allows_flag_bundling is true.
-- An exact -- token ends option parsing.
-- positional_variants, when present, must match the complete positional sequence.
-- Array variants have exact arity; bounded-rest variants limit repeated operands.
-- Policies are trusted operator configuration and must not come from remote or untrusted sources.
-- Invalid policy schemas and patterns stop server startup.
-
-SUBCOMMANDS AND NESTED COMMANDS:
-- subcommands and nested_commands are available only in whitelist policies.
-- Match nested_commands prefixes against raw tokens before selecting a subcommand or parsing flags.
-- Prefix length determines where the nested command starts; its policy owns all remaining flags.
-- A missing nested command, ambiguous prefix, rejected inner command, or policy cycle is rejected without fallback.
-- At most {MAX_NESTED_COMMAND_DEPTH} nested command levels and {MAX_POLICY_DEPTH} subcommand levels are allowed.
-- Subcommand policies have independent flags and requirements; root flags are not inherited.
-- Unknown subcommands are rejected; routing policies default to no root positionals.
-- When a command is unavailable on the host, Docker container inspection and nested execution may be available in the effective policy: use docker ps, then docker exec <container> <command> [arguments...].
-
-VALIDATION MODES:
-1. PERMISSIVE MODE allows all arguments for commands whose complete grammar is read-only.
-2. WHITELIST MODE allows only declared flags and optional positional variants.
-3. BLACKLIST MODE allows arguments except specifically blocked dangerous flags.
-4. HANDLER MODE uses a command-specific validator for value-sensitive grammar such as curl.
-
-REMOVED COMMANDS (internal exec/write that flag validation cannot catch):
-- awk: system() executes commands, print>"file" writes, print|"cmd" pipes
-- sed: e command executes shell, w command writes files
-
-ALLOWED COMMAND CATEGORIES (base set, extensible via YAML):
-- File operations: ls, cat, pwd, file, stat
-- Text processing: grep, head, tail, wc, sort, uniq, cut, tr, diff, comm
-- File search: find
-- System information: whoami, hostname, uname, date, which
-- Disk usage: du, df
-- Path manipulation: basename, dirname
-- Process inspection: ps, top, free
-- System logs: journalctl
-- Archive inspection: tar, unzip, zipinfo
-- Structured data: jq, xmllint, yq
-- Network diagnostics: ping, netstat, ss, iostat, nc
-- Network fetch (handler mode): curl, allowlisted targets only
-- Container inspection and policy-validated execution: docker
-- Security status: ufw, nft, iptables, ip6tables, getenforce, aa-status, auditctl, fail2ban-client (strict read-only forms only)
-
-All command-specific policies are loaded from YAML files in the configured policy directory.
-Use ssh_list_allowed_commands to inspect the pipeline contract and each command's
-effective value_pattern, positional_variants, required flags, and bundling setting.
-
-STRUCTURED EXAMPLES:
-- Single command: [{{"command": "uptime", "arguments": []}}]
-- Pipeline: [{{"command": "journalctl", "arguments": ["-u", "myservice", "-n", "200"]}}, {{"command": "grep", "arguments": ["-i", "error"]}}]
-
-For detailed information about specific commands, use ssh_list_allowed_commands.
-To test a pipeline before execution, use ssh_validate_command.
+    return """Validation semantics:
+- Arguments are literal; shell operators, substitutions, expansions, and globs are not interpreted.
+- Stages form a pipeline; its exit status is the final stage's exit status.
+- value_pattern: null means no value; a regex requires exactly one value.
+- Regex patterns use case-sensitive full-string matching.
+- Generic value-taking flags accept --flag=value or --flag value, and -n100 or -n 100.
+- Generic short-flag bundles require allows_flag_bundling; -- ends flag parsing.
+- positional_variants match the entire positional sequence: arrays set exact arity; rest variants bound repeated operands. Flat whitelist policies without variants allow unrestricted operands.
+- Subcommand flags and requirements are independent; parent flags are not inherited.
+- nested_commands match prefix tokens; the remaining command and arguments must pass their own effective policy.
+- Handler-specific grammar and constraints are reported in handler_rules.
+- A valid dry run confirms policy acceptance only; it makes no SSH connection and does not check host command availability.
 """
-
-    curl_config = COMMAND_POLICIES.get("curl")
-    if curl_config and curl_config.get("handler") == "curl":
-        rules += f"\nCURL POLICY (live):\n{_curl_allowed_summary(curl_config)}\n"
-
-    routed_policies: dict[str, CommandInfo] = {}
-    for name, stored_config in sorted(COMMAND_POLICIES.items()):
-        config = _ensure_compiled_policy(name, stored_config)
-        if "subcommands" in config or "nested_commands" in config:
-            routed_policies[name] = _describe_command_policy(config)
-    if routed_policies:
-        rules += "\nSUBCOMMAND AND NESTED COMMAND POLICIES (live):\n"
-        rules += json.dumps(routed_policies, indent=2) + "\n"
-
-    return rules
 
 
 @mcp.tool()
-def ssh_validate_command(pipeline: list[CommandStage]) -> str:
+def safe_ssh_validate_command(pipeline: list[CommandStage]) -> str:
     """
     Validate structured command stages without executing them (dry-run).
     Use one stage for a single command. Each stage must contain command and arguments.
+    Use safe_ssh_list_allowed_commands for names, then safe_ssh_get_command_rules for their
+    syntax. A valid result means policy acceptance, not host command availability.
     """
     normalized, error_msg = _normalize_pipeline(pipeline)
     if normalized is None:
-        return f"INVALID: {error_msg}\n\nPipeline: {pipeline!r}\n\nUse ssh_describe_validation_rules for the pipeline contract."
+        return f"INVALID: {error_msg}\n\nPipeline: {pipeline!r}\n\n{_COMMAND_DISCOVERY_HINT}"
 
     rendered = render_pipeline(normalized)
     is_safe, error_msg = _validate_normalized_pipeline(normalized)
 
     if is_safe:
-        return f"VALID: Pipeline '{rendered}' will execute successfully."
+        return f"VALID: Pipeline '{rendered}' is allowed by the command policy. No SSH command was executed."
     else:
-        return f"INVALID: {error_msg}\n\nPipeline: {rendered}\n\nUse ssh_describe_validation_rules for more information about validation rules.\nUse ssh_list_allowed_commands to see the pipeline contract and all allowed commands."
+        return (
+            f"INVALID: {error_msg}\n\nPipeline: {rendered}\n\n{_COMMAND_DISCOVERY_HINT}"
+        )
 
 
 def main() -> None:
