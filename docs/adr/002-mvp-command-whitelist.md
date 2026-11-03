@@ -115,7 +115,7 @@ Permissive mode (most commands):
 
 - Command has NO flags that can modify the system or exfiltrate data
 - All flags are read-only by design (ls, cat, grep, head, tail, ps, df, etc.)
-- This is the default - only use whitelist/blacklist when there is a specific dangerous flag
+- This was the original default. The current policy contract requires an explicit mode for every generic command and subcommand; see the [operator guide](../guide.md#allowing-more-commands).
 
 Whitelist mode (tar, unzip, ping, nc):
 

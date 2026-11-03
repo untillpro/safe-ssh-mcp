@@ -2,6 +2,7 @@
 # Example safe-ssh-mcp policy extension.
 # Copy this file to a .yaml file in this directory and restart the server.
 # Policy files are trusted operator configuration and must not be populated from remote or untrusted sources.
+# Every generic command and subcommand must declare mode; handler policies declare handler instead.
 
 systemctl:
   mode: whitelist

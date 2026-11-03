@@ -681,7 +681,11 @@ def _normalize_command_policy(
     if is_handler:
         normalized["handler"] = raw_handler
     if uses_generic_policy:
-        raw_mode = config_data.get("mode", "permissive")
+        if "mode" not in config_data:
+            raise ValueError(
+                f"{context} must explicitly declare 'mode' as permissive, blacklist, or whitelist"
+            )
+        raw_mode = config_data["mode"]
         if not isinstance(raw_mode, str) or raw_mode not in _POLICY_MODES:
             raise ValueError(
                 f"{context} field 'mode' must be permissive, blacklist, or whitelist"
@@ -849,6 +853,7 @@ def _normalize_command_policy(
 #   - curl, only to allowlisted targets (handler mode, see ADR-003)
 #   - docker exec, only for commands accepted by the effective policy
 #
+# Every generic command and subcommand must explicitly declare its mode.
 # Mode assignment:
 #   - permissive: command has NO flags/features that modify the system
 #   - blacklist:  command has a FEW dangerous flags among many safe ones
@@ -1451,7 +1456,11 @@ def _validate_positional_arguments(
 def _validate_generic_command(
     arguments: list[str], config: CommandPolicy, cmd_name: str
 ) -> tuple[bool, str]:
-    mode = config.get("mode", "permissive")
+    if "mode" not in config:
+        return _generic_rejection(
+            cmd_name, "generic policy must explicitly declare 'mode'"
+        )
+    mode = config["mode"]
     rules = _flag_rules_by_name(config)
     compiled_flags = config.get("_compiled_flags", {})
     allows_bundling = config.get("allows_flag_bundling", False)
@@ -2328,10 +2337,13 @@ async def ssh_test_connection(host: str) -> str:
 def _describe_command_policy(config: CommandPolicy) -> CommandInfo:
     """Describe a policy tree without compiled patterns or command-specific metadata."""
     handler_name = config.get("handler")
+    mode = config.get("mode")
+    if handler_name:
+        mode = f"handler:{handler_name}"
+    elif mode is None:
+        raise ValueError("Generic command policy must explicitly declare 'mode'")
     info: CommandInfo = {
-        "mode": f"handler:{handler_name}"
-        if handler_name
-        else config.get("mode", "permissive"),
+        "mode": mode,
         "allows_flag_bundling": config.get("allows_flag_bundling", False),
         "pattern_matching": "case-sensitive full-string",
     }
@@ -2427,6 +2439,8 @@ BLOCKED OPERATIONS:
 - Any command not declared by the command policy
 
 POLICY PATTERN SEMANTICS:
+- Every generic command and subcommand must explicitly declare mode; there is no default or inheritance.
+- Handler policies declare handler instead of mode.
 - Every flag is an object containing flag and value_pattern.
 - value_pattern: null means the flag accepts no value.
 - A regular-expression value_pattern means the flag requires exactly one value.

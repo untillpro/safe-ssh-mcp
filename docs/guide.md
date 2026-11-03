@@ -254,13 +254,15 @@ systemctl:
       max_rest: 10
 ```
 
+Every generic command and subcommand must explicitly declare `mode: permissive`, `mode: blacklist`, or `mode: whitelist`. There is no default, and a child does not inherit its parent's mode. Missing or invalid modes stop startup. Handler policies such as `handler: curl` use their handler's validation and must not declare `mode`. Older custom generic policies that omitted `mode` previously selected permissive behavior; add `mode: permissive` to preserve that behavior, or choose another mode and declare its rules explicitly. The bundled policies already declare their modes.
+
 Every flag object must contain `value_pattern`. A string requires one value and validates it with a case-sensitive full-string regular-expression match; `null` means the flag accepts no value. The equivalent forms `--flag value` and `--flag=value`, and `-n value` and `-nvalue`, receive the same validation result. Set `allows_flag_bundling: true` only when the command supports combined short flags; the default is `false`.
 
 In whitelist mode, `positional_variants` defines complete allowed positional sequences. Array variants have exact arity. Bounded-rest variants use `args`, `rest_pattern`, `min_rest`, and `max_rest`. Omit `positional_variants` only when unrestricted positional arguments are safe. It is rejected in blacklist and permissive modes because the values of undeclared flags cannot be distinguished reliably from positional arguments.
 
 ### Subcommand and nested-command rules
 
-In whitelist mode, `subcommands` maps a leading token to a child policy, which can itself contain further subcommands. Children have independent flags, required flags, and positional rules; no flags or requirements are inherited from the parent. Routing nodes default to no root positionals, and unknown subcommands are rejected. Root flags are used on root invocations such as `docker --help`, not before a subcommand. Ordinary flat policies are unchanged.
+In whitelist mode, `subcommands` maps a leading token to a child policy, which can itself contain further subcommands. Each generic child must declare its own mode and has independent flags, required flags, and positional rules; no mode, flags, or requirements are inherited from the parent. Routing nodes default to no root positionals, and unknown subcommands are rejected. Root flags are used on root invocations such as `docker --help`, not before a subcommand. Flat policies retain their existing flag and positional behavior when their mode is explicitly declared.
 
 `nested_commands` lists regex prefixes preceding another command:
 

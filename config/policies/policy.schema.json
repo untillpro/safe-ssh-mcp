@@ -25,15 +25,17 @@
     "genericPolicy": {
       "title": "Generic command policy",
       "type": "object",
+      "required": [
+        "mode"
+      ],
       "properties": {
         "mode": {
-          "description": "How undeclared flags are handled. The default is permissive.",
+          "description": "Required for every generic command and subcommand. Controls undeclared flags; has no default and is not inherited.",
           "enum": [
             "permissive",
             "blacklist",
             "whitelist"
-          ],
-          "default": "permissive"
+          ]
         },
         "flags": {
           "$ref": "#/$defs/flags"
@@ -110,24 +112,13 @@
         },
         {
           "if": {
-            "anyOf": [
-              {
-                "not": {
-                  "required": [
-                    "mode"
-                  ]
-                }
-              },
-              {
-                "properties": {
-                  "mode": {
-                    "const": "permissive"
-                  }
-                },
-                "required": [
-                  "mode"
-                ]
+            "properties": {
+              "mode": {
+                "const": "permissive"
               }
+            },
+            "required": [
+              "mode"
             ]
           },
           "then": {

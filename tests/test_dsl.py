@@ -638,10 +638,149 @@ class GenericDispatchTests(unittest.TestCase):
         self.assertNotIn("_compiled", json.dumps(result))
 
 
+class ExplicitPolicyModeTests(unittest.TestCase):
+    def test_missing_root_mode_stops_policy_loading(self) -> None:
+        cases: tuple[dict[str, object], ...] = (
+            {},
+            {"flags": [{"flag": "--help", "value_pattern": None}]},
+            {"positional_variants": [[]]},
+            {"nested_commands": [["run"]]},
+            {"subcommands": {"status": {"mode": "whitelist"}}},
+        )
+        for raw in cases:
+            with self.subTest(raw=raw), TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                content: str = yaml.safe_dump({"probe": raw})
+                (root / "missing-mode.yaml").write_text(content, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    ValueError, "must explicitly declare 'mode'"
+                ):
+                    load_command_policies(root)
+
+    def test_missing_child_mode_is_not_inherited(self) -> None:
+        cases: tuple[tuple[dict[str, object], str], ...] = (
+            (
+                {"mode": "whitelist", "subcommands": {"status": {}}},
+                "probe status",
+            ),
+            (
+                {
+                    "mode": "whitelist",
+                    "subcommands": {
+                        "service": {
+                            "mode": "whitelist",
+                            "subcommands": {"status": {}},
+                        }
+                    },
+                },
+                "probe service status",
+            ),
+            (
+                {
+                    "mode": "whitelist",
+                    "subcommands": {
+                        "service": {"subcommands": {"status": {"mode": "whitelist"}}}
+                    },
+                },
+                "probe service",
+            ),
+        )
+        for raw, command in cases:
+            with (
+                self.subTest(command=command),
+                TemporaryDirectory() as temporary_directory,
+            ):
+                root = Path(temporary_directory)
+                content: str = yaml.safe_dump({"probe": raw})
+                (root / "missing-child-mode.yaml").write_text(content, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    ValueError, "must explicitly declare 'mode'"
+                ) as error:
+                    load_command_policies(root)
+                self.assertIn(command, str(error.exception))
+
+    def test_invalid_explicit_modes_fail_closed(self) -> None:
+        for mode in (None, True, 1, "", "Whitelist", "unknown"):
+            with (
+                self.subTest(mode=mode),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "field 'mode' must be permissive, blacklist, or whitelist",
+                ),
+            ):
+                policy("probe", {"mode": mode})
+
+    def test_explicit_child_modes_control_validation_and_discovery(self) -> None:
+        router = policy(
+            "probe",
+            {
+                "mode": "whitelist",
+                "flags": [{"flag": "--help", "value_pattern": None}],
+                "subcommands": {
+                    "strict": {"mode": "whitelist"},
+                    "open": {"mode": "permissive"},
+                    "limited": {
+                        "mode": "blacklist",
+                        "flags": [{"flag": "--write", "value_pattern": None}],
+                    },
+                },
+            },
+        )
+        with patch.dict(COMMAND_POLICIES, {"probe": router}, clear=True):
+            for arguments, expected in (
+                (("--help",), True),
+                (("--other",), False),
+                (("strict",), True),
+                (("strict", "operand"), True),
+                (("strict", "--help"), False),
+                (("open", "--other"), True),
+                (("limited", "--other"), True),
+                (("limited", "--write"), False),
+            ):
+                with self.subTest(arguments=arguments):
+                    accepted, reason = validate_pipeline(single("probe", *arguments))
+                    self.assertEqual(accepted, expected, reason)
+            raw_result: object = json.loads(ssh_list_allowed_commands())
+        result = cast(dict[str, object], raw_result)
+        commands = cast(dict[str, object], result["commands"])
+        probe = cast(dict[str, object], commands["probe"])
+        children = cast(dict[str, dict[str, object]], probe["subcommands"])
+        self.assertEqual(probe["mode"], "whitelist")
+        self.assertEqual(children["strict"]["mode"], "whitelist")
+        self.assertEqual(children["open"]["mode"], "permissive")
+        self.assertEqual(children["limited"]["mode"], "blacklist")
+
+    def test_runtime_and_nested_policies_cannot_fall_back_to_permissive(self) -> None:
+        wrapper = policy("wrapper", {"mode": "whitelist", "nested_commands": [["run"]]})
+        with patch.dict(
+            COMMAND_POLICIES, {"probe": {}, "wrapper": wrapper}, clear=True
+        ):
+            for command, arguments in (
+                ("probe", ()),
+                ("probe", ("--write",)),
+                ("wrapper", ("run", "probe", "--write")),
+            ):
+                with self.subTest(command=command, arguments=arguments):
+                    accepted, reason = validate_pipeline(single(command, *arguments))
+                    self.assertFalse(accepted)
+                    self.assertIn("must explicitly declare 'mode'", reason)
+
+    def test_handler_policies_use_handler_instead_of_mode(self) -> None:
+        curl_raw = raw_policy_file("curl.yaml", "curl")
+        curl = policy("curl", curl_raw)
+        self.assertEqual(curl.get("handler"), "curl")
+        self.assertNotIn("mode", curl)
+        with self.assertRaisesRegex(ValueError, "unknown field.*mode"):
+            policy("curl", {**curl_raw, "mode": "whitelist"})
+
+
 class RecursivePolicySchemaTests(unittest.TestCase):
     def test_invalid_recursive_policy_fields_fail_closed(self) -> None:
         cases: tuple[tuple[object, str], ...] = (
-            ({"subcommands": {"ps": {"mode": "whitelist"}}}, "only in whitelist"),
+            (
+                {"mode": "permissive", "subcommands": {"ps": {"mode": "whitelist"}}},
+                "only in whitelist",
+            ),
             ({"mode": "blacklist", "nested_commands": [["run"]]}, "only in whitelist"),
             ({"mode": "whitelist", "subcommands": {}}, "non-empty object"),
             ({"mode": "whitelist", "subcommands": []}, "non-empty object"),
@@ -662,7 +801,10 @@ class RecursivePolicySchemaTests(unittest.TestCase):
                 "invalid subcommand",
             ),
             (
-                {"mode": "whitelist", "subcommands": {"ps": {"unknown": True}}},
+                {
+                    "mode": "whitelist",
+                    "subcommands": {"ps": {"mode": "whitelist", "unknown": True}},
+                },
                 "unknown field",
             ),
             ({"mode": "whitelist", "nested_commands": []}, "non-empty array"),
