@@ -2285,7 +2285,22 @@ async def _mcp_lifespan(_: MCPServer[None]) -> AsyncIterator[None]:
 
 
 # Create MCP server
-mcp: MCPServer[None] = MCPServer("safe-ssh-mcp", lifespan=_mcp_lifespan)
+mcp: MCPServer[None] = MCPServer(
+    "safe-ssh-mcp",
+    description=(
+        "Read-only SSH inspection and diagnostics with protections against system "
+        "modification and network data exfiltration."
+    ),
+    instructions=(
+        "Inspect and diagnose remote hosts over SSH using policy-approved read-only commands. "
+        "Command and argument validation is designed to protect against system modification "
+        "and network data exfiltration. Discover command names with "
+        "safe_ssh_list_allowed_commands, fetch selected rules with safe_ssh_get_command_rules, "
+        "then optionally validate with safe_ssh_validate_command before executing structured "
+        "pipelines with safe_ssh_execute."
+    ),
+    lifespan=_mcp_lifespan,
+)
 
 # Tools raise ToolError so the agent sees why a call failed (rejected command,
 # timeout, connection error). mcp v2 hides the message of any other exception.
