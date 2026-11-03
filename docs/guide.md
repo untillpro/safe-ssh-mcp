@@ -98,18 +98,17 @@ Most other clients (Augment Code, Claude Desktop, Cursor) take a JSON config:
 }
 ```
 
-### 4. Configure runtime directories (optional)
+### 4. Select a configuration directory (optional)
 
-By default, the server reads policies from `policies/` and writes logs to `.logs/` beside `safe_ssh_mcp.py`. No environment variables are needed for these defaults.
+By default, the server uses [config/](../config/), which contains the required `config.yaml`, the complete policy under `policies/`, and an ignored `.logs/` runtime directory. No environment variable is needed for this bundled configuration.
 
-To use custom locations, add the server with the environment variables below instead of the corresponding command in step 3. Specify only the variable you need to override.
+To use a complete replacement configuration, copy that layout, customize it, and select its directory with `SAFE_SSH_MCP_CONFIG_DIR`.
 
 #### Claude Code
 
 ```bash
 claude mcp add --scope user safe-ssh \
-  -e SAFE_SSH_MCP_POLICY_DIR=/path/to/policies \
-  -e SAFE_SSH_MCP_LOG_DIR=/path/to/logs \
+  -e SAFE_SSH_MCP_CONFIG_DIR=/path/to/config \
   -- bash /path/to/safe-ssh-mcp/safe_ssh_mcp.sh
 ```
 
@@ -117,8 +116,7 @@ claude mcp add --scope user safe-ssh \
 
 ```bash
 codex mcp add safe-ssh \
-  --env SAFE_SSH_MCP_POLICY_DIR=/path/to/policies \
-  --env SAFE_SSH_MCP_LOG_DIR=/path/to/logs \
+  --env SAFE_SSH_MCP_CONFIG_DIR=/path/to/config \
   -- bash /path/to/safe-ssh-mcp/safe_ssh_mcp.sh
 ```
 
@@ -129,13 +127,23 @@ Add the variables to the server's `env` object:
 ```json
 {
   "env": {
-    "SAFE_SSH_MCP_POLICY_DIR": "/path/to/policies",
-    "SAFE_SSH_MCP_LOG_DIR": "/path/to/logs"
+    "SAFE_SSH_MCP_CONFIG_DIR": "/path/to/config"
   }
 }
 ```
 
-Absolute paths are used directly. Relative paths are resolved from the directory containing `safe_ssh_mcp.py`, not the MCP client's working directory. A configured policy directory replaces the packaged policy completely; it is not merged with `policies/`. Missing or empty policies and an unusable log directory stop server startup. On Windows, use forward-slash paths such as `C:/safe-ssh/policies`.
+Every configuration directory must contain this strictly validated file:
+
+```yaml
+version: 1
+
+logging:
+  directory: .logs
+```
+
+`logging` may be omitted to use `.logs`. A relative `logging.directory` is resolved from the effective configuration directory; an absolute path is used directly. Unknown fields, duplicate keys, unsupported versions, empty paths, a missing `config.yaml`, missing or empty `policies/`, and an unusable log directory stop startup.
+
+An absolute `SAFE_SSH_MCP_CONFIG_DIR` is used directly. A relative value is resolved from the directory containing `safe_ssh_mcp.py`, not the MCP client's working directory. On Windows, use a forward-slash path such as `C:/safe-ssh/config`.
 
 ### 5. Try it
 
@@ -204,7 +212,7 @@ The default Docker policy permits its inspection commands and `docker exec <cont
 
 For example, `docker exec database nodetool status` is accepted only when the effective policy also permits `nodetool status`.
 
-To disable `docker exec` while retaining `docker ps`, `inspect`, `logs`, and the other inspection forms, remove `handler: docker` from [docker.yaml](../policies/docker.yaml), leave `mode: whitelist` and `positional_variants` unchanged, and restart the MCP server. Remove the entire Docker command policy to disable all Docker commands.
+To disable `docker exec` while retaining `docker ps`, `inspect`, `logs`, and the other inspection forms, remove `handler: docker` from [docker.yaml](../config/policies/docker.yaml), leave `mode: whitelist` and `positional_variants` unchanged, and restart the MCP server. Remove the entire Docker command policy to disable all Docker commands.
 
 ## Agent-facing command format
 
@@ -212,7 +220,7 @@ To disable `docker exec` while retaining `docker ps`, `inspect`, `logs`, and the
 
 ## Allowing more commands
 
-The default command-specific policy is declared in YAML files under [policies/](../policies/). [core.yaml](../policies/core.yaml) contains the base read-only commands, and the repository also ships policies for curl, Docker, additional system information, and strictly constrained security-status commands. Use `ssh_list_allowed_commands` for the effective syntax. To add a command, put its policy in one of these YAML files or add another `*.yaml` or `*.yml` file and restart the server. [example.yaml.template](../policies/example.yaml.template) shows the format, and [policy.schema.json](../policies/policy.schema.json) provides editor validation and completion:
+The default command-specific policy is declared in YAML files under [config/policies/](../config/policies/). [core.yaml](../config/policies/core.yaml) contains the base read-only commands, and the repository also ships policies for curl, Docker, additional system information, and strictly constrained security-status commands. Use `ssh_list_allowed_commands` for the effective syntax. To add a command, put its policy in one of these YAML files or add another `*.yaml` or `*.yml` file and restart the server. [example.yaml.template](../config/policies/example.yaml.template) shows the format, and [policy.schema.json](../config/policies/policy.schema.json) provides editor validation and completion:
 
 ```yaml
 lsblk:
@@ -253,7 +261,7 @@ All `*.yaml` and `*.yml` files are loaded in filename order. Every command must 
 
 ## Logs
 
-Each server process writes a log file named `{YYMMDDHHmm}-{pid}.log` to `.logs/` next to `safe_ssh_mcp.py` or the directory selected by `SAFE_SSH_MCP_LOG_DIR`. It records connections, every executed command with its exit code, and every rejected command with the reason.
+Each server process writes a log file named `{YYMMDDHHmm}-{pid}.log` to the `logging.directory` selected by the effective `config.yaml`, which is `config/.logs/` by default. It records connections, every executed command with its exit code, and every rejected command with the reason.
 
 ## SSH troubleshooting
 

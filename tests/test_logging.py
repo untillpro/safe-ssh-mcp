@@ -36,7 +36,7 @@ from safe_ssh_mcp import (
     validate_pipeline,
 )
 
-initialize_command_policies(REPOSITORY_ROOT / "policies")
+initialize_command_policies(REPOSITORY_ROOT / "config" / "policies")
 
 
 def single(command: str, *arguments: str) -> list[CommandStage]:

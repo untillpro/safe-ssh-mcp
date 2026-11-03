@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/untillpro/safe-ssh-mcp/main/policies/policy.schema.json",
+  "$id": "https://raw.githubusercontent.com/untillpro/safe-ssh-mcp/main/config/policies/policy.schema.json",
   "title": "Safe SSH MCP command policy",
   "description": "A set of command-specific validation policies loaded by Safe SSH MCP.",
   "type": "object",

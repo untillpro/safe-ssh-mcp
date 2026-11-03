@@ -47,7 +47,7 @@ from safe_ssh_mcp import (
     ssh_connections,
 )
 
-initialize_command_policies(REPOSITORY_ROOT / "policies")
+initialize_command_policies(REPOSITORY_ROOT / "config" / "policies")
 
 
 class HostListingTests(unittest.TestCase):

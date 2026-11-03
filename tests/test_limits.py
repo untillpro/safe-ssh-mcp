@@ -31,7 +31,7 @@ from safe_ssh_mcp import (
     initialize_command_policies,
 )
 
-initialize_command_policies(REPOSITORY_ROOT / "policies")
+initialize_command_policies(REPOSITORY_ROOT / "config" / "policies")
 
 
 class _FakeProcess:

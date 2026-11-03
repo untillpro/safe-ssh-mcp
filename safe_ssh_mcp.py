@@ -134,8 +134,7 @@ for stream in (sys.stdin, sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-POLICY_DIR_ENV = "SAFE_SSH_MCP_POLICY_DIR"
-LOG_DIR_ENV = "SAFE_SSH_MCP_LOG_DIR"
+CONFIG_DIR_ENV = "SAFE_SSH_MCP_CONFIG_DIR"
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 logger.propagate = False
@@ -166,7 +165,7 @@ def _resolve_directory_relative_to_script(directory: Path) -> Path:
 def configure_logging(log_dir: Path | None = None) -> Path:
     """Configure UTF-8 file and stderr logging and return the log file path."""
     resolved_log_dir = (
-        _resolve_configured_directory(LOG_DIR_ENV, ".logs")
+        _resolve_runtime_directories()[1]
         if log_dir is None
         else _resolve_directory_relative_to_script(log_dir)
     )
@@ -282,6 +281,68 @@ _UniqueKeySafeLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
     _construct_unique_mapping,
 )
+
+
+def _load_runtime_configuration(config_dir: Path) -> tuple[Path, Path]:
+    """Load one strict configuration directory and return policy and log paths."""
+    resolved_config_dir = _resolve_directory_relative_to_script(config_dir)
+    config_file = resolved_config_dir / "config.yaml"
+    if not config_file.is_file():
+        raise FileNotFoundError(f"Configuration file not found: {config_file}")
+
+    try:
+        with open(config_file, encoding="utf-8") as config_stream:
+            raw_config: object = yaml.load(config_stream, Loader=_UniqueKeySafeLoader)
+    except UnicodeDecodeError as error:
+        raise ValueError(f"Configuration file must be UTF-8: {config_file}") from error
+    except (yaml.YAMLError, ValueError) as error:
+        raise ValueError(f"Failed to parse {config_file}: {error}") from error
+
+    if not isinstance(raw_config, dict):
+        raise ValueError(f"Configuration file root must be an object: {config_file}")
+    config_data: dict[object, object] = cast(dict[object, object], raw_config)
+
+    unknown_fields = set(config_data) - {"version", "logging"}
+    if unknown_fields:
+        raise ValueError(
+            "Configuration file has unknown field(s): "
+            f"{', '.join(sorted(map(str, unknown_fields)))}"
+        )
+
+    raw_version = config_data.get("version")
+    if isinstance(raw_version, bool) or raw_version != 1:
+        raise ValueError("Configuration field 'version' must be the integer 1")
+
+    raw_logging = config_data.get("logging", {})
+    if not isinstance(raw_logging, dict):
+        raise ValueError("Configuration field 'logging' must be an object")
+    logging_data: dict[object, object] = cast(dict[object, object], raw_logging)
+    unknown_logging_fields = set(logging_data) - {"directory"}
+    if unknown_logging_fields:
+        raise ValueError(
+            "Configuration field 'logging' has unknown field(s): "
+            f"{', '.join(sorted(map(str, unknown_logging_fields)))}"
+        )
+
+    raw_log_dir = logging_data.get("directory", ".logs")
+    if not isinstance(raw_log_dir, str) or not raw_log_dir.strip():
+        raise ValueError(
+            "Configuration field 'logging.directory' must be a non-empty string"
+        )
+    resolved_log_dir = Path(raw_log_dir).expanduser()
+    if not resolved_log_dir.is_absolute():
+        resolved_log_dir = resolved_config_dir / resolved_log_dir
+
+    return (
+        (resolved_config_dir / "policies").resolve(),
+        resolved_log_dir.resolve(),
+    )
+
+
+def _resolve_runtime_directories() -> tuple[Path, Path]:
+    """Resolve effective policy and log directories from runtime configuration."""
+    config_dir = _resolve_configured_directory(CONFIG_DIR_ENV, "config")
+    return _load_runtime_configuration(config_dir)
 
 
 def _policy_context(source: str, cmd_name: str) -> str:
@@ -634,7 +695,7 @@ def _normalize_command_policy(
 def load_command_policies(policy_dir: Path | None = None) -> dict[str, CommandPolicy]:
     """Load the complete command policy from YAML files."""
     resolved_policy_dir = (
-        policy_dir if policy_dir is not None else SCRIPT_DIR / "policies"
+        policy_dir if policy_dir is not None else _resolve_runtime_directories()[0]
     )
     if not resolved_policy_dir.is_dir():
         raise FileNotFoundError(f"Policy directory not found: {resolved_policy_dir}")
@@ -702,7 +763,7 @@ COMMAND_POLICIES: dict[str, CommandPolicy] = {}
 def initialize_command_policies(policy_dir: Path | None = None) -> Path:
     """Replace the effective command policy from one complete directory."""
     resolved_policy_dir = (
-        _resolve_configured_directory(POLICY_DIR_ENV, "policies")
+        _resolve_runtime_directories()[0]
         if policy_dir is None
         else _resolve_directory_relative_to_script(policy_dir)
     )
@@ -716,8 +777,19 @@ def initialize_runtime(
     policy_dir: Path | None = None, log_dir: Path | None = None
 ) -> tuple[Path, Path]:
     """Initialize logging and the effective command policy."""
-    log_file = configure_logging(log_dir)
-    resolved_policy_dir = initialize_command_policies(policy_dir)
+    configured_policy_dir, configured_log_dir = _resolve_runtime_directories()
+    effective_policy_dir = (
+        configured_policy_dir
+        if policy_dir is None
+        else _resolve_directory_relative_to_script(policy_dir)
+    )
+    effective_log_dir = (
+        configured_log_dir
+        if log_dir is None
+        else _resolve_directory_relative_to_script(log_dir)
+    )
+    log_file = configure_logging(effective_log_dir)
+    resolved_policy_dir = initialize_command_policies(effective_policy_dir)
     return resolved_policy_dir, log_file
 
 

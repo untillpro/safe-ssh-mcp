@@ -70,8 +70,8 @@ Policy selection is server-wide. Per-host or per-container activation is not par
 ## Reference implementation
 
 - Handler dispatch, Docker parsing, and the shared single-command validator: `safe_ssh_mcp.py`.
-- Default configuration: `policies/docker.yaml`.
-- Editor schema: `policies/policy.schema.json`.
+- Default configuration: `config/policies/docker.yaml`.
+- Editor schema: `config/policies/policy.schema.json`.
 - Regression coverage: `tests/test_dsl.py`.
 
 ## References

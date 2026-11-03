@@ -12,7 +12,7 @@ ADR-002 excluded `curl` entirely, classing it as network exfiltration, because t
 
 Operators may need agents to query a diagnostic HTTP(S) endpoint exposed only on a remote host's loopback interface. When such an endpoint requires authentication, a safe pipeline can produce netrc-formatted credentials from already readable input and pipe them to `curl --netrc-file /dev/stdin`, keeping credential values out of the logged command text.
 
-An earlier `policies/curl.yaml` enabled this with generic whitelist mode, but that approach could not restrict the URL, could not stop local-file reads via `--data-urlencode @file`, and could not restrict which credentials file `--netrc-file` reads. Those gaps were documented in the file header but not enforced.
+An earlier `config/policies/curl.yaml` enabled this with generic whitelist mode, but that approach could not restrict the URL, could not stop local-file reads via `--data-urlencode @file`, and could not restrict which credentials file `--netrc-file` reads. Those gaps were documented in the file header but not enforced.
 
 This ADR adds a fourth validation mode -- a command-specific handler -- and a curl handler built on it, shaped to permit this narrow diagnostic use while constraining dangerous value forms.
 
@@ -21,7 +21,7 @@ This ADR adds a fourth validation mode -- a command-specific handler -- and a cu
 Unchanged from ADR-002 except for curl:
 
 - Before: `curl` is blocked/excluded.
-- After: `curl` is allowed as a single GET to the targets configured in `policies/curl.yaml` -- loopback-only by default -- with the proxy disabled; every other invocation is rejected.
+- After: `curl` is allowed as a single GET to the targets configured in `config/policies/curl.yaml` -- loopback-only by default -- with the proxy disabled; every other invocation is rejected.
 
 The chosen control is **"stay on the box"**: if curl can only reach a loopback address, there is no off-box network path, so the destination's port and path no longer matter for exfiltration. Loopback also naturally excludes the LAN and the cloud metadata endpoint (link-local `169.254.0.0/16`, which is not loopback). This is why the default policy allows any port and any path on loopback rather than enumerating them.
 
@@ -64,7 +64,7 @@ Documented so the control is not assumed stronger than it is:
 
 ## Configuration
 
-`policies/curl.yaml` ships a loopback-only policy for diagnostic GET access to local HTTP APIs, including credentials piped through `/dev/stdin`, without enumerating endpoint paths. An operator only widens `targets` if a non-loopback destination is genuinely needed.
+`config/policies/curl.yaml` ships a loopback-only policy for diagnostic GET access to local HTTP APIs, including credentials piped through `/dev/stdin`, without enumerating endpoint paths. An operator only widens `targets` if a non-loopback destination is genuinely needed.
 
 ```yaml
 curl:
@@ -121,7 +121,7 @@ Example accepted command: `curl --disable --get --noproxy '*' --max-time 8 http:
 
 - `_validate_curl`, `_curl_url_allowed`, `_host_matches`, `_curl_allowed_summary`, `COMMAND_HANDLERS`, and the `handler` dispatch in `validate_command` -- `safe_ssh_mcp.py`.
 - Agent guidance: `ssh_describe_validation_rules` (renders the live summary) and the `ssh_execute` tool description.
-- Policy: `policies/curl.yaml`.
+- Policy: `config/policies/curl.yaml`.
 - Tests: `CurlHandlerTests` and `CurlLoopbackUsageTests` in `tests/test_validation.py`.
 
 ## References

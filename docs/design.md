@@ -91,7 +91,7 @@ flowchart TD
 
 The rendered pipeline is sent through the SSH account's configured remote shell, as raw commands were before this change. The returned exit status is therefore the final pipeline stage's status. A fixed Bash wrapper was rejected because it would introduce a new remote prerequisite solely for `pipefail`; see [ADR 004](adr/004-structured-command-pipeline.md).
 
-`COMMAND_POLICIES` is built entirely from the `*.yaml` and `*.yml` files in the effective policy directory. This is [policies/](../policies/) by default or the complete replacement directory selected by `SAFE_SSH_MCP_POLICY_DIR`. YAML owns command-specific permissions. Python owns pipeline shape, safe serialization, and specialized value-aware handler implementations because those are executable validation boundaries rather than declarative policy.
+`COMMAND_POLICIES` is built entirely from the `*.yaml` and `*.yml` files in the effective policy directory. This is [config/policies/](../config/policies/) by default or the `policies/` child of the complete replacement selected by `SAFE_SSH_MCP_CONFIG_DIR`. YAML owns command-specific permissions. Python owns pipeline shape, safe serialization, and specialized value-aware handler implementations because those are executable validation boundaries rather than declarative policy.
 
 A pipeline is rejected when:
 
@@ -138,17 +138,16 @@ flowchart LR
 
 The container may be any non-option name or ID reference accepted by Docker and is not allowlisted. Docker remains authoritative for resolving that reference. Docker exec options are rejected, and an inner Docker handler invocation is rejected. All other inner commands use the same effective policies as top-level stages, including specialized handlers such as `curl`. The handler validates the structured arguments directly and does not introduce `sh -c` or another shell layer.
 
-This design intentionally treats a command allowed on the host as allowed in every reachable container. Policy activation is server-wide. To disable `docker exec` while retaining Docker inspection, remove `handler: docker` from `policies/docker.yaml`, keep its whitelist and positional variants, and restart the server. See [ADR 006](adr/006-policy-validated-docker-exec.md).
+This design intentionally treats a command allowed on the host as allowed in every reachable container. Policy activation is server-wide. To disable `docker exec` while retaining Docker inspection, remove `handler: docker` from `config/policies/docker.yaml`, keep its whitelist and positional variants, and restart the server. See [ADR 006](adr/006-policy-validated-docker-exec.md).
 
-## Runtime directories
+## Runtime configuration
 
-- `SAFE_SSH_MCP_POLICY_DIR` selects the complete effective policy directory. It does not extend or merge with the packaged policy.
-- `SAFE_SSH_MCP_LOG_DIR` selects the log directory.
-- When a variable is omitted, the corresponding default is `policies/` or `.logs/` beside `safe_ssh_mcp.py`.
-- Absolute paths are used directly. Relative paths are resolved from the directory containing `safe_ssh_mcp.py`, making them independent of the MCP client's working directory.
-- An empty environment value is invalid. A missing or empty policy directory and a log directory which cannot be created or opened stop startup.
+- [config/](../config/) beside `safe_ssh_mcp.py` is the default complete configuration directory.
+- `SAFE_SSH_MCP_CONFIG_DIR` selects a complete replacement with required `config.yaml` and `policies/` children. Absolute values are used directly; relative values are resolved from the directory containing `safe_ssh_mcp.py`.
+- `config.yaml` must declare integer `version: 1`. Its optional `logging.directory` defaults to `.logs`; relative values are resolved from the effective configuration directory and absolute values are used directly.
+- Configuration YAML rejects duplicate keys, unknown fields, unsupported versions, non-object sections, and empty log paths. A missing configuration file, missing or empty policy directory, or log directory which cannot be created or opened stops startup.
 
-Runtime initialization configures logging before loading policy files, so policy-load events are recorded. Importing the module performs neither operation and does not create `.logs/` during test discovery or library use.
+Runtime initialization loads and validates `config.yaml`, configures logging, and then loads policy files so policy-load events are recorded. Importing the module performs none of those operations and does not create `.logs/` during test discovery or library use.
 
 `awk` and `sed` are not allowed at all: they can run commands and write files from inside their scripts, which flag checks cannot see. The reasoning is in [ADR 002](adr/002-mvp-command-whitelist.md).
 
@@ -180,10 +179,10 @@ The server exposes no download or other local file-write tool. Agents inspect re
 
 - [safe_ssh_mcp.sh](../safe_ssh_mcp.sh) - root Bash launcher. It resolves the server relative to itself, supports `--runner auto|uv|pipx`, prefers uv in automatic mode, uses pipx 1.12.0 or newer with the `pip` backend, and writes launcher diagnostics only to stderr so stdout remains available for MCP. Explicit runner selection never falls back; `--` forwards remaining arguments to the server.
 - [safe_ssh_mcp.py](../safe_ssh_mcp.py) - the whole server. Its header declares the Python version and dependencies as [inline script metadata](https://packaging.python.org/en/latest/specifications/inline-script-metadata/), which `uv run` reads. It validates structured pipelines and YAML policies, safely serializes pipeline stages, and implements specialized handlers.
-- [policies/](../policies/) - the default complete command-specific policy. `*.yaml` and `*.yml` files are loaded in filename order at startup; duplicate command definitions are rejected. `core.yaml` owns the base commands, `example.yaml.template` is not loaded, and `policy.schema.json` provides editor validation but is ignored by the runtime loader. Explicit modelines select the schema instead of broad Schema Store matches; runtime validation remains authoritative. `SAFE_SSH_MCP_POLICY_DIR` replaces this directory.
+- [config/](../config/) - the default complete runtime configuration. Required `config.yaml` selects the log directory, `.gitignore` excludes local logs, and `policies/` owns the complete command-specific policy. Policy `*.yaml` and `*.yml` files are loaded in filename order at startup; duplicate command definitions are rejected. `core.yaml` owns the base commands, `example.yaml.template` is not loaded, and `policy.schema.json` provides editor validation but is ignored by the runtime loader. Explicit modelines select the schema instead of broad Schema Store matches; runtime validation remains authoritative. `SAFE_SSH_MCP_CONFIG_DIR` replaces this directory.
 - [prompts/](../prompts/) - general security and operational-health assessment prompts for agents.
 - [tests/](../tests/) - unit, transport, launcher, limit, logging, discovery, and policy-validation tests. Run the complete unit suite with `uv run --with-requirements safe_ssh_mcp.py python -m unittest discover -s tests -t . -p 'test_*.py'`.
-- `.logs/` - the default log directory, created at startup with one `{YYMMDDHHmm}-{pid}.log` per server process. `SAFE_SSH_MCP_LOG_DIR` replaces this location. Log files are ignored by git.
+- `config/.logs/` - the default log directory, created at startup with one `{YYMMDDHHmm}-{pid}.log` per server process and ignored by `config/.gitignore`.
 - [docs/](.) - this documentation.
 
 The launcher and server remain at the repository root because they are the public entrypoint and application. No `scripts/` directory is needed unless maintenance, release, or migration utilities are added later.

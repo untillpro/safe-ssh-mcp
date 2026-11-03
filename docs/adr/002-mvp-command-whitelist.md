@@ -166,11 +166,11 @@ Privilege escalation: `sudo`, `su`
 - MVP can expand via YAML policy files
 - Dangerous `find` and `tar` flags unchanged since POSIX standardization
 - 40 base commands sufficient for 95% of use cases
-- Additional commands can be added via `policies/` YAML files
+- Additional commands can be added via `config/policies/` YAML files
 
 ## Reference Implementation
 
-See `policies/core.yaml` for the base command policies and `COMMAND_POLICIES` in `safe_ssh_mcp.py` for their validated runtime representation.
+See `config/policies/core.yaml` for the base command policies and `COMMAND_POLICIES` in `safe_ssh_mcp.py` for their validated runtime representation.
 The validator comment block documents the threat model and mode assignment rationale.
 
 ## Risks
@@ -184,7 +184,7 @@ The validator comment block documents the threat model and mode assignment ratio
 | Scripting languages bypass flag validation | High     | awk and sed removed entirely                       |
 | Permissive mode allows unexpected flags    | Low      | Only used for commands with no write/execute flags |
 | find blacklist misses new dangerous flags  | Low      | POSIX find stable since 1970s                      |
-| Users expect commands not in base set      | Low      | Extensible via `policies/` YAML files              |
+| Users expect commands not in base set      | Low      | Extensible via `config/policies/` YAML files       |
 
 ## Consequences
 
