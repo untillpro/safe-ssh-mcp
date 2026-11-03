@@ -919,6 +919,199 @@ class DockerInspectionTests(unittest.TestCase):
                 self.assertEqual(accepted, expected, reason)
 
 
+class DockerManagementInspectionTests(unittest.TestCase):
+    ROUTES: ClassVar[tuple[tuple[str, str, int, int], ...]] = (
+        ("node", "ls", 0, 0),
+        ("node", "inspect", 1, 10),
+        ("node", "ps", 0, 10),
+        ("service", "ls", 0, 0),
+        ("service", "inspect", 1, 10),
+        ("service", "ps", 1, 10),
+        ("stack", "ls", 0, 0),
+        ("stack", "services", 1, 1),
+        ("stack", "ps", 1, 1),
+        ("system", "df", 0, 0),
+    )
+
+    def assert_docker(self, expected: bool, *arguments: str) -> None:
+        accepted, reason = GenericDispatchTests.check(
+            {"docker": DockerPolicyTests.DOCKER_POLICY}, "docker", *arguments
+        )
+        self.assertEqual(accepted, expected, reason)
+
+    def test_inspection_routes_and_documented_flags(self) -> None:
+        cases = (
+            ("node", "ls"),
+            ("node", "ls", "-frole=manager", "--format", "{{json .}}", "-q"),
+            ("node", "ls", "--filter=node.label=region=eu", "--quiet"),
+            ("node", "inspect", "self"),
+            ("node", "inspect", "--pretty", "-f{{.ID}}", "worker-1.local", "worker-2"),
+            ("node", "ps"),
+            ("node", "ps", "--no-trunc", "--no-resolve", "--quiet", "worker-1"),
+            ("node", "ps", "-f", "desired-state=running", "--format=json"),
+            ("service", "ls", "--filter", "label=team=ops", "--format=json", "-q"),
+            ("service", "inspect", "--pretty", "--format", "{{.Spec.Name}}", "air_web"),
+            ("service", "inspect", "-f{{.ID}}", "air_web", "air_db"),
+            ("service", "ps", "--no-trunc", "--no-resolve", "-q", "air_web"),
+            ("service", "ps", "-fdesired-state=running", "--format=json", "air_web"),
+            ("stack", "ls", "--format", "json"),
+            ("stack", "services", "-fname=air_web", "--format=json", "--quiet", "air"),
+            ("stack", "ps", "--no-trunc", "--no-resolve", "-q", "air"),
+            (
+                "stack",
+                "ps",
+                "--filter",
+                "desired-state=running",
+                "--format=json",
+                "air",
+            ),
+            ("system", "df"),
+            ("system", "df", "-v", "--format", "json"),
+            ("system", "df", "--verbose"),
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.assert_docker(True, *arguments)
+
+    def test_operand_count_boundaries(self) -> None:
+        for group, verb, minimum, maximum in self.ROUTES:
+            for count in (0, 1, 2, 10, 11):
+                with self.subTest(group=group, verb=verb, count=count):
+                    references = [f"object-{index}" for index in range(count)]
+                    self.assert_docker(
+                        minimum <= count <= maximum, group, verb, *references
+                    )
+
+    def test_references_are_bounded_names_or_ids(self) -> None:
+        for group, verb, _minimum, maximum in self.ROUTES:
+            if maximum == 0:
+                continue
+            for reference, expected in (
+                ("a" * 256, True),
+                ("a" * 257, False),
+                ("worker-1.example.local", True),
+                ("air_stack-web.1", True),
+                ("a1b2c3d4", True),
+                ("", False),
+                ("--write", False),
+                ("/etc/passwd", False),
+                ("a/b", False),
+                ("a:b", False),
+                ("two names", False),
+            ):
+                with self.subTest(group=group, verb=verb, reference=reference):
+                    self.assert_docker(expected, group, verb, "--", reference)
+
+    def test_flag_values_have_explicit_arity_and_bounds(self) -> None:
+        filter_routes = {
+            ("node", "ls"),
+            ("node", "ps"),
+            ("service", "ls"),
+            ("service", "ps"),
+            ("stack", "services"),
+            ("stack", "ps"),
+        }
+        for group, verb, minimum, _maximum in self.ROUTES:
+            references = ["object"] * minimum
+            flags = ["--format"]
+            if (group, verb) in filter_routes:
+                flags.extend(("-f", "--filter"))
+            elif verb == "inspect":
+                flags.append("-f")
+            for flag in flags:
+                for value, expected in (
+                    ("x" * 1024, True),
+                    ("x" * 1025, False),
+                    ("", False),
+                ):
+                    with self.subTest(
+                        group=group, verb=verb, flag=flag, length=len(value)
+                    ):
+                        self.assert_docker(
+                            expected, group, verb, flag, value, *references
+                        )
+                with self.subTest(group=group, verb=verb, missing_value=flag):
+                    self.assert_docker(False, group, verb, *references, flag)
+        for arguments in (
+            ("node", "ls", "--quiet=false"),
+            ("node", "inspect", "--pretty=true", "self"),
+            ("service", "ps", "--no-trunc=false", "air_web"),
+            ("stack", "ps", "--no-resolve=true", "air"),
+            ("system", "df", "--verbose=false"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assert_docker(False, *arguments)
+
+    def test_flags_are_scoped_to_each_leaf(self) -> None:
+        cases = (
+            ("node", "ls", "--pretty"),
+            ("node", "ls", "--no-trunc"),
+            ("node", "inspect", "--quiet", "self"),
+            ("node", "inspect", "--filter", "role=manager", "self"),
+            ("node", "ps", "--pretty"),
+            ("service", "ls", "--no-resolve"),
+            ("service", "inspect", "--filter", "name=air_web", "air_web"),
+            ("service", "ps", "--pretty", "air_web"),
+            ("stack", "ls", "--quiet"),
+            ("stack", "ls", "--filter", "name=air"),
+            ("stack", "services", "--no-trunc", "air"),
+            ("stack", "services", "--no-resolve", "air"),
+            ("stack", "ps", "--pretty", "air"),
+            ("system", "df", "--filter", "name=air"),
+            ("system", "df", "--quiet"),
+            ("node", "--format=json", "ls"),
+            ("--format=json", "node", "ls"),
+            ("node", "ls", "--help"),
+            ("node", "ls", "--host", "tcp://example:2375"),
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.assert_docker(False, *arguments)
+
+    def test_modifying_and_unknown_verbs_are_rejected(self) -> None:
+        cases = (
+            ("node", "update", "--availability", "drain", "worker-1"),
+            ("node", "promote", "worker-1"),
+            ("node", "demote", "worker-1"),
+            ("node", "rm", "worker-1"),
+            ("service", "create", "nginx"),
+            ("service", "update", "--force", "air_web"),
+            ("service", "scale", "air_web=0"),
+            ("service", "rollback", "air_web"),
+            ("service", "rm", "air_web"),
+            ("service", "logs", "air_web"),
+            ("stack", "deploy", "--compose-file", "stack.yaml", "air"),
+            ("stack", "rm", "air"),
+            ("system", "prune", "--force"),
+            ("system", "events"),
+            ("node", "unknown"),
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.assert_docker(False, *arguments)
+
+    def test_discovery_exposes_new_routes_and_leaf_rules(self) -> None:
+        with patch.dict(
+            COMMAND_POLICIES, {"docker": DockerPolicyTests.DOCKER_POLICY}, clear=True
+        ):
+            raw_result: object = json.loads(ssh_list_allowed_commands())
+        result = cast(dict[str, object], raw_result)
+        commands = cast(dict[str, object], result["commands"])
+        docker = cast(dict[str, object], commands["docker"])
+        groups = cast(dict[str, dict[str, object]], docker["subcommands"])
+        for group, verb, _minimum, _maximum in self.ROUTES:
+            with self.subTest(group=group, verb=verb):
+                group_info = groups[group]
+                self.assertEqual(group_info["mode"], "whitelist")
+                self.assertNotIn("allowed_flags", group_info)
+                leaves = cast(dict[str, dict[str, object]], group_info["subcommands"])
+                leaf = leaves[verb]
+                self.assertEqual(leaf["mode"], "whitelist")
+                flags = cast(list[dict[str, object]], leaf["allowed_flags"])
+                self.assertIn("--format", {flag["flag"] for flag in flags})
+                self.assertIn("positional_variants", leaf)
+
+
 class SecurityPolicyRegressionTests(unittest.TestCase):
     def assert_security_command(
         self, expected: bool, command: str, *arguments: str

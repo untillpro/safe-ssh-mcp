@@ -93,3 +93,127 @@ docker:
       positional_variants:
         - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"]
         - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}", "[0-9]{1,5}(?:/(?:tcp|udp))?"]
+
+    node:
+      mode: whitelist
+      subcommands:
+        ls:
+          mode: whitelist
+          flags:
+            - { flag: -f, value_pattern: ".{1,1024}" }
+            - { flag: --filter, value_pattern: ".{1,1024}" }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+            - { flag: -q, value_pattern: null }
+            - { flag: --quiet, value_pattern: null }
+          positional_variants:
+            - []
+        inspect:
+          mode: whitelist
+          flags:
+            - { flag: -f, value_pattern: ".{1,1024}" }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+            - { flag: --pretty, value_pattern: null }
+          positional_variants:
+            - args: []
+              rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
+              min_rest: 1
+              max_rest: 10
+        ps:
+          mode: whitelist
+          flags:
+            - { flag: -f, value_pattern: ".{1,1024}" }
+            - { flag: --filter, value_pattern: ".{1,1024}" }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+            - { flag: --no-resolve, value_pattern: null }
+            - { flag: --no-trunc, value_pattern: null }
+            - { flag: -q, value_pattern: null }
+            - { flag: --quiet, value_pattern: null }
+          positional_variants:
+            - args: []
+              rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
+              min_rest: 0
+              max_rest: 10
+
+    service:
+      mode: whitelist
+      subcommands:
+        ls:
+          mode: whitelist
+          flags:
+            - { flag: -f, value_pattern: ".{1,1024}" }
+            - { flag: --filter, value_pattern: ".{1,1024}" }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+            - { flag: -q, value_pattern: null }
+            - { flag: --quiet, value_pattern: null }
+          positional_variants:
+            - []
+        inspect:
+          mode: whitelist
+          flags:
+            - { flag: -f, value_pattern: ".{1,1024}" }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+            - { flag: --pretty, value_pattern: null }
+          positional_variants:
+            - args: []
+              rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
+              min_rest: 1
+              max_rest: 10
+        ps:
+          mode: whitelist
+          flags:
+            - { flag: -f, value_pattern: ".{1,1024}" }
+            - { flag: --filter, value_pattern: ".{1,1024}" }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+            - { flag: --no-resolve, value_pattern: null }
+            - { flag: --no-trunc, value_pattern: null }
+            - { flag: -q, value_pattern: null }
+            - { flag: --quiet, value_pattern: null }
+          positional_variants:
+            - args: []
+              rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
+              min_rest: 1
+              max_rest: 10
+
+    stack:
+      mode: whitelist
+      subcommands:
+        ls:
+          mode: whitelist
+          flags:
+            - { flag: --format, value_pattern: ".{1,1024}" }
+          positional_variants:
+            - []
+        services:
+          mode: whitelist
+          flags:
+            - { flag: -f, value_pattern: ".{1,1024}" }
+            - { flag: --filter, value_pattern: ".{1,1024}" }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+            - { flag: -q, value_pattern: null }
+            - { flag: --quiet, value_pattern: null }
+          positional_variants:
+            - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"]
+        ps:
+          mode: whitelist
+          flags:
+            - { flag: -f, value_pattern: ".{1,1024}" }
+            - { flag: --filter, value_pattern: ".{1,1024}" }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+            - { flag: --no-resolve, value_pattern: null }
+            - { flag: --no-trunc, value_pattern: null }
+            - { flag: -q, value_pattern: null }
+            - { flag: --quiet, value_pattern: null }
+          positional_variants:
+            - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"]
+
+    system:
+      mode: whitelist
+      subcommands:
+        df:
+          mode: whitelist
+          flags:
+            - { flag: -v, value_pattern: null }
+            - { flag: --verbose, value_pattern: null }
+            - { flag: --format, value_pattern: ".{1,1024}" }
+          positional_variants:
+            - []
