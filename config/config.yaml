@@ -2,3 +2,4 @@ version: 1
 
 logging:
   directory: .logs
+  retention_days: 30

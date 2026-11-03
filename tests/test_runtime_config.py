@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 from safe_ssh_mcp import (
     COMMAND_POLICIES,
     CONFIG_DIR_ENV,
+    _load_runtime_configuration,
     _resolve_configured_directory,
     initialize_runtime,
     logger,
@@ -156,6 +157,60 @@ class RuntimeDirectoryTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "must not be empty"),
         ):
             _resolve_configured_directory(CONFIG_DIR_ENV, "config")
+
+    def test_log_retention_defaults_and_explicit_value(self) -> None:
+        cases = (
+            ("version: 1\n", 30),
+            ("version: 1\nlogging:\n  directory: .logs\n", 30),
+            ("version: 1\nlogging:\n  retention_days: 7\n", 7),
+            ("version: 1\nlogging:\n  retention_days: 1\n", 1),
+            (f"version: 1\nlogging:\n  retention_days: {10**100}\n", 10**100),
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            for index, (config_text, expected_days) in enumerate(cases):
+                with self.subTest(config=config_text):
+                    config_dir = root / str(index)
+                    self.write_configuration(config_dir, config_text)
+                    _, _, retention_days = _load_runtime_configuration(config_dir)
+                    self.assertEqual(retention_days, expected_days)
+
+    def test_invalid_log_retention_is_rejected_before_logging(self) -> None:
+        invalid_values = ("0", "-1", "true", "false", "1.5", "'30'", "null", "[]", "{}")
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            for index, value in enumerate(invalid_values):
+                config_dir = root / str(index)
+                self.write_configuration(
+                    config_dir, f"version: 1\nlogging:\n  retention_days: {value}\n"
+                )
+                with (
+                    self.subTest(value=value),
+                    patch.dict(
+                        os.environ, {CONFIG_DIR_ENV: str(config_dir)}, clear=True
+                    ),
+                    self.assertRaisesRegex(
+                        ValueError, "retention_days.*positive integer"
+                    ),
+                ):
+                    initialize_runtime()
+                self.assertFalse((config_dir / ".logs").exists())
+
+    def test_configured_retention_reaches_startup_cleanup(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir).resolve() / "config"
+            self.write_configuration(
+                config_dir, "version: 1\nlogging:\n  retention_days: 7\n"
+            )
+            with (
+                patch.dict(os.environ, {CONFIG_DIR_ENV: str(config_dir)}, clear=True),
+                patch("safe_ssh_mcp._cleanup_expired_logs") as cleanup,
+            ):
+                try:
+                    _, log_file = initialize_runtime()
+                    cleanup.assert_called_once_with(config_dir / ".logs", log_file, 7)
+                finally:
+                    self.restore_logging()
 
     def test_configuration_file_is_required(self) -> None:
         with TemporaryDirectory() as temp_dir:

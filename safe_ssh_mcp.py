@@ -19,15 +19,19 @@ commands on remote hosts using SSH with command validation for safety.
 # ruff: noqa: TRY004
 
 import asyncio
+import ctypes
 import ipaddress
 import logging
 import os
 import platform
 import re
 import shlex
+import stat
 import sys
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from ctypes import wintypes
 from datetime import datetime
 from io import TextIOWrapper
 from pathlib import Path
@@ -135,6 +139,8 @@ for stream in (sys.stdin, sys.stdout, sys.stderr):
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_DIR_ENV = "SAFE_SSH_MCP_CONFIG_DIR"
+DEFAULT_LOG_RETENTION_DAYS = 30
+_LOG_FILENAME_PATTERN = re.compile(r"[0-9]{10}-([1-9][0-9]{0,9})\.log")
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 logger.propagate = False
@@ -162,13 +168,94 @@ def _resolve_directory_relative_to_script(directory: Path) -> Path:
     return resolved_directory.resolve()
 
 
-def configure_logging(log_dir: Path | None = None) -> Path:
+def _windows_process_is_running(pid: int) -> bool | None:
+    """Check a Windows PID without sending a signal or requesting write access."""
+    if pid > 0xFFFFFFFF:
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        # PROCESS_QUERY_LIMITED_INFORMATION; any accessible process is protected.
+        handle: int | None = cast(int | None, open_process(0x1000, False, pid))
+        if handle is None:
+            # ERROR_INVALID_PARAMETER identifies a PID which no longer exists.
+            return False if ctypes.get_last_error() == 87 else None
+        close_handle(handle)
+    except OSError:
+        return None
+    return True
+
+
+def _process_is_running(pid: int) -> bool | None:
+    """Return False only when a positive PID is known to be absent."""
+    if pid <= 0:
+        return None
+    if pid == os.getpid():
+        return True
+    if sys.platform == "win32":
+        # os.kill() can terminate processes on Windows, even for signal zero.
+        return _windows_process_is_running(pid)
+    if os.name != "posix":
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, OverflowError):
+        return None
+    return True
+
+
+def _cleanup_expired_logs(
+    log_dir: Path, current_log: Path, retention_days: int
+) -> None:
+    """Remove expired, inactive session logs directly inside the log directory."""
+    cutoff_ns = time.time_ns() - retention_days * 86_400_000_000_000
+    try:
+        candidates = list(log_dir.iterdir())
+    except OSError as error:
+        logger.warning("Cannot scan log directory %s: %s", log_dir, error)
+        return
+    for candidate in candidates:
+        match = _LOG_FILENAME_PATTERN.fullmatch(candidate.name)
+        if candidate == current_log or match is None:
+            continue
+        try:
+            metadata = candidate.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mtime_ns >= cutoff_ns:
+                continue
+            if _process_is_running(int(match[1])) is not False:
+                continue
+            candidate.unlink()
+        except FileNotFoundError:
+            # Another starting instance may have already removed this log.
+            continue
+        except OSError as error:
+            logger.warning("Cannot clean up log file %s: %s", candidate, error)
+
+
+def configure_logging(
+    log_dir: Path | None = None, *, retention_days: int | None = None
+) -> Path:
     """Configure UTF-8 file and stderr logging and return the log file path."""
-    resolved_log_dir = (
-        _resolve_runtime_directories()[1]
-        if log_dir is None
-        else _resolve_directory_relative_to_script(log_dir)
-    )
+    if log_dir is None or retention_days is None:
+        _, configured_log_dir, configured_retention_days = (
+            _resolve_runtime_configuration()
+        )
+        resolved_log_dir = (
+            configured_log_dir
+            if log_dir is None
+            else _resolve_directory_relative_to_script(log_dir)
+        )
+        if retention_days is None:
+            retention_days = configured_retention_days
+    else:
+        resolved_log_dir = _resolve_directory_relative_to_script(log_dir)
     try:
         resolved_log_dir.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -203,6 +290,7 @@ def configure_logging(log_dir: Path | None = None) -> Path:
     logger.addHandler(stderr_handler)
     logger.setLevel(logging.INFO)
     logger.propagate = False
+    _cleanup_expired_logs(resolved_log_dir, log_file, retention_days)
     return log_file
 
 
@@ -283,8 +371,8 @@ _UniqueKeySafeLoader.add_constructor(
 )
 
 
-def _load_runtime_configuration(config_dir: Path) -> tuple[Path, Path]:
-    """Load one strict configuration directory and return policy and log paths."""
+def _load_runtime_configuration(config_dir: Path) -> tuple[Path, Path, int]:
+    """Load one strict configuration directory and its log retention setting."""
     resolved_config_dir = _resolve_directory_relative_to_script(config_dir)
     config_file = resolved_config_dir / "config.yaml"
     if not config_file.is_file():
@@ -317,7 +405,7 @@ def _load_runtime_configuration(config_dir: Path) -> tuple[Path, Path]:
     if not isinstance(raw_logging, dict):
         raise ValueError("Configuration field 'logging' must be an object")
     logging_data: dict[object, object] = cast(dict[object, object], raw_logging)
-    unknown_logging_fields = set(logging_data) - {"directory"}
+    unknown_logging_fields = set(logging_data) - {"directory", "retention_days"}
     if unknown_logging_fields:
         raise ValueError(
             "Configuration field 'logging' has unknown field(s): "
@@ -333,14 +421,25 @@ def _load_runtime_configuration(config_dir: Path) -> tuple[Path, Path]:
     if not resolved_log_dir.is_absolute():
         resolved_log_dir = resolved_config_dir / resolved_log_dir
 
+    raw_retention_days = logging_data.get("retention_days", DEFAULT_LOG_RETENTION_DAYS)
+    if (
+        isinstance(raw_retention_days, bool)
+        or not isinstance(raw_retention_days, int)
+        or raw_retention_days <= 0
+    ):
+        raise ValueError(
+            "Configuration field 'logging.retention_days' must be a positive integer"
+        )
+
     return (
         (resolved_config_dir / "policies").resolve(),
         resolved_log_dir.resolve(),
+        raw_retention_days,
     )
 
 
-def _resolve_runtime_directories() -> tuple[Path, Path]:
-    """Resolve effective policy and log directories from runtime configuration."""
+def _resolve_runtime_configuration() -> tuple[Path, Path, int]:
+    """Resolve effective policy and log directories and log retention."""
     config_dir = _resolve_configured_directory(CONFIG_DIR_ENV, "config")
     return _load_runtime_configuration(config_dir)
 
@@ -695,7 +794,7 @@ def _normalize_command_policy(
 def load_command_policies(policy_dir: Path | None = None) -> dict[str, CommandPolicy]:
     """Load the complete command policy from YAML files."""
     resolved_policy_dir = (
-        policy_dir if policy_dir is not None else _resolve_runtime_directories()[0]
+        policy_dir if policy_dir is not None else _resolve_runtime_configuration()[0]
     )
     if not resolved_policy_dir.is_dir():
         raise FileNotFoundError(f"Policy directory not found: {resolved_policy_dir}")
@@ -763,7 +862,7 @@ COMMAND_POLICIES: dict[str, CommandPolicy] = {}
 def initialize_command_policies(policy_dir: Path | None = None) -> Path:
     """Replace the effective command policy from one complete directory."""
     resolved_policy_dir = (
-        _resolve_runtime_directories()[0]
+        _resolve_runtime_configuration()[0]
         if policy_dir is None
         else _resolve_directory_relative_to_script(policy_dir)
     )
@@ -777,7 +876,9 @@ def initialize_runtime(
     policy_dir: Path | None = None, log_dir: Path | None = None
 ) -> tuple[Path, Path]:
     """Initialize logging and the effective command policy."""
-    configured_policy_dir, configured_log_dir = _resolve_runtime_directories()
+    configured_policy_dir, configured_log_dir, retention_days = (
+        _resolve_runtime_configuration()
+    )
     effective_policy_dir = (
         configured_policy_dir
         if policy_dir is None
@@ -788,7 +889,7 @@ def initialize_runtime(
         if log_dir is None
         else _resolve_directory_relative_to_script(log_dir)
     )
-    log_file = configure_logging(effective_log_dir)
+    log_file = configure_logging(effective_log_dir, retention_days=retention_days)
     resolved_policy_dir = initialize_command_policies(effective_policy_dir)
     return resolved_policy_dir, log_file
 

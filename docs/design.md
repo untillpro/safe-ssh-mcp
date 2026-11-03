@@ -145,9 +145,14 @@ This design intentionally treats a command allowed on the host as allowed in eve
 - [config/](../config/) beside `safe_ssh_mcp.py` is the default complete configuration directory.
 - `SAFE_SSH_MCP_CONFIG_DIR` selects a complete replacement with required `config.yaml` and `policies/` children. Absolute values are used directly; relative values are resolved from the directory containing `safe_ssh_mcp.py`.
 - `config.yaml` must declare integer `version: 1`. Its optional `logging.directory` defaults to `.logs`; relative values are resolved from the effective configuration directory and absolute values are used directly.
+- Optional `logging.retention_days` defaults to 30 and accepts positive integers only, excluding booleans.
 - Configuration YAML rejects duplicate keys, unknown fields, unsupported versions, non-object sections, and empty log paths. A missing configuration file, missing or empty policy directory, or log directory which cannot be created or opened stops startup.
 
 Runtime initialization loads and validates `config.yaml`, configures logging, and then loads policy files so policy-load events are recorded. Importing the module performs none of those operations and does not create `.logs/` during test discovery or library use.
+
+Logging initialization opens the current UTF-8 log and installs file and stderr handlers before performing retention cleanup once. Cleanup deletes only direct-child regular files matching `{YYMMDDHHmm}-{pid}.log` whose modification time is strictly older than the configured number of 24-hour days. Symlinks, directories, unrelated files, the current log, and files whose PID is running or uncertain are preserved. POSIX process checks use signal zero; Windows uses `OpenProcess` with query-only access and closes the returned handle, treating only an absent PID as inactive. PID reuse conservatively preserves old logs.
+
+Directory scanning, metadata, and deletion failures are warnings and do not stop startup; concurrent disappearance is ignored. Failure to create the log directory or open the current log remains fatal. There is no periodic cleanup, file size rotation, or total directory size cap, so an individual long-running process can continue growing its log until the next startup applies retention to inactive sessions.
 
 `awk` and `sed` are not allowed at all: they can run commands and write files from inside their scripts, which flag checks cannot see. The reasoning is in [ADR 002](adr/002-mvp-command-whitelist.md).
 

@@ -139,9 +139,10 @@ version: 1
 
 logging:
   directory: .logs
+  retention_days: 30
 ```
 
-`logging` may be omitted to use `.logs`. A relative `logging.directory` is resolved from the effective configuration directory; an absolute path is used directly. Unknown fields, duplicate keys, unsupported versions, empty paths, a missing `config.yaml`, missing or empty `policies/`, and an unusable log directory stop startup.
+`logging` may be omitted to use `.logs` and retain inactive logs for 30 days. A relative `logging.directory` is resolved from the effective configuration directory; an absolute path is used directly. `logging.retention_days` is optional and must be a positive integer; zero, negative values, booleans, and non-integer values stop startup. Unknown fields, duplicate keys, unsupported versions, empty paths, a missing `config.yaml`, missing or empty `policies/`, and an unusable log directory stop startup.
 
 An absolute `SAFE_SSH_MCP_CONFIG_DIR` is used directly. A relative value is resolved from the directory containing `safe_ssh_mcp.py`, not the MCP client's working directory. On Windows, use a forward-slash path such as `C:/safe-ssh/config`.
 
@@ -262,6 +263,10 @@ All `*.yaml` and `*.yml` files are loaded in filename order. Every command must 
 ## Logs
 
 Each server process writes a log file named `{YYMMDDHHmm}-{pid}.log` to the `logging.directory` selected by the effective `config.yaml`, which is `config/.logs/` by default. It records connections, every executed command with its exit code, and every rejected command with the reason.
+
+At startup, the server removes inactive session logs whose last modification time is more than `logging.retention_days` days old, defaulting to 30 days. Cleanup considers only regular, non-symlink files with the server's filename format directly inside the effective log directory; it does not traverse subdirectories. The current log and files whose PID is still running or cannot be checked are preserved. PID reuse can therefore preserve an old log until a later startup.
+
+Cleanup failures produce warnings in the current log and on stderr without preventing startup. An unusable current log directory or file still stops startup. Logs remain UTF-8, individual files have no size limit, and retention cleanup runs only at startup; a long-running server does not periodically remove old logs or impose a total directory size limit.
 
 ## SSH troubleshooting
 
