@@ -6,15 +6,17 @@
 
 ### Prerequisites
 
-- Bash for the local launcher. On Windows, use Git Bash, MSYS2, or another Bash available on `PATH`. Remote Bash is not required; SSH continues to use each account's configured shell.
+- Git to clone the repository, and Bash for the local launcher. On Windows, use Git Bash, MSYS2, or another Bash available on `PATH`. Remote accounts need a POSIX-compatible shell for literal argument quoting and pipelines; Bash itself is not required remotely.
 - One Python script runner:
   - Recommended: [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs Python 3.10+ and the dependencies itself.
-  - Fallback: [pipx](https://pipx.pypa.io/stable/how-to/install-pipx.html) 1.12.0 or newer; the launcher explicitly uses its `pip` backend.
+  - Fallback: [pipx](https://pipx.pypa.io/stable/how-to/install-pipx.html) 1.12.0 or newer, with Python 3.10+ installed; the launcher explicitly uses its `pip` backend.
 - SSH keys loaded into ssh-agent or configured with `IdentityFile`
 - Optional host aliases and connection settings in `~/.ssh/config`
 - A `~/.ssh/known_hosts` file containing a verified key for every destination
 
 Windows users can follow the dedicated [Windows SSH setup guide](windows.md) for OpenSSH agent, key, host-verification, configuration, and authentication details.
+
+Run the `bash` code blocks in Bash, including on Windows. The MCP client must also be able to find Bash and the selected Python runner on its `PATH`.
 
 ### 1. Add keys and hosts
 
@@ -47,52 +49,52 @@ ssh example-web
 
 ### 2. Get the code
 
-Replace `REPOSITORY_URL` with the URL of the repository or distribution you use.
+Replace `<your-workspace-directory>` with the absolute parent directory in which to clone the repository. The checkout will be `<your-workspace-directory>/safe-ssh-mcp`. On Windows, use a forward-slash path such as `C:/workspaces/work`; keep paths quoted when they appear in shell commands.
 
 ```bash
-cd your-workspace-directory
-git clone REPOSITORY_URL
+cd "<your-workspace-directory>"
+git clone https://github.com/untillpro/safe-ssh-mcp
 cd safe-ssh-mcp
 ```
 
 ### 3. Add the server to your MCP client
 
-Replace `/path/to` with the absolute checkout path. On Windows, use a forward-slash path such as `C:/workspaces/work`.
+Use the registration for your client below. For a replacement configuration, use the corresponding command in step 4 instead. The client launches the server as a local stdio process.
 
 #### Claude Code
 
 ```bash
-claude mcp add --scope user safe-ssh -- bash /path/to/safe-ssh-mcp/safe_ssh_mcp.sh
+claude mcp add --scope user safe-ssh -- bash "<your-workspace-directory>/safe-ssh-mcp/safe_ssh_mcp.sh"
 ```
 
-`--scope user` makes the server available in every project. Without it, the server is added only for the current directory. Check it with `claude mcp list`, or `/mcp` inside a session.
+`--scope user` makes the server available in every project. Without it, registration uses local scope for the current project. Check it with `claude mcp list`, or `/mcp` inside a session. See [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp#mcp-installation-scopes).
 
 #### Codex CLI
 
 ```bash
-codex mcp add safe-ssh -- bash /path/to/safe-ssh-mcp/safe_ssh_mcp.sh
+codex mcp add safe-ssh -- bash "<your-workspace-directory>/safe-ssh-mcp/safe_ssh_mcp.sh"
 ```
 
-This writes the server to `~/.codex/config.toml`:
+By default, this writes the server to `~/.codex/config.toml` using the following entry. See [Codex MCP configuration](https://developers.openai.com/codex/mcp#connect-codex-to-an-mcp-server).
 
 ```toml
 [mcp_servers.safe-ssh]
 command = "bash"
-args = ["/path/to/safe-ssh-mcp/safe_ssh_mcp.sh"]
+args = ["<your-workspace-directory>/safe-ssh-mcp/safe_ssh_mcp.sh"]
 ```
 
 Check it with `codex mcp list`, or `/mcp` inside a session.
 
 #### Other clients
 
-Most other clients (Augment Code, Claude Desktop, Cursor) take a JSON config:
+For clients that accept an `mcpServers` JSON object, use:
 
 ```json
 {
   "mcpServers": {
     "safe-ssh": {
       "command": "bash",
-      "args": ["/path/to/safe-ssh-mcp/safe_ssh_mcp.sh"]
+      "args": ["<your-workspace-directory>/safe-ssh-mcp/safe_ssh_mcp.sh"]
     }
   }
 }
@@ -100,34 +102,36 @@ Most other clients (Augment Code, Claude Desktop, Cursor) take a JSON config:
 
 ### 4. Select a configuration directory (optional)
 
-By default, the server uses [config/](../config/), which contains the required `config.yaml`, the complete policy under `policies/`, and an ignored `.logs/` runtime directory. No environment variable is needed for this bundled configuration.
+By default, the server uses [config/](../config/), which contains the required `config.yaml` and the complete policy under `policies/`. The ignored `.logs/` runtime directory is created at startup. No environment variable is needed for this bundled configuration.
 
-To use a complete replacement configuration, copy that layout, customize it, and select its directory with `SAFE_SSH_MCP_CONFIG_DIR`.
+To use a complete replacement configuration, copy that layout, customize it, and select its directory with `SAFE_SSH_MCP_CONFIG_DIR`. Its policy files replace the bundled policy files; the two directories are not merged. Replace `<custom-config-directory>` with the directory containing both `config.yaml` and `policies/`.
+
+If `safe-ssh` is already registered, edit its existing entry to add the environment variable rather than adding a duplicate registration.
 
 #### Claude Code
 
 ```bash
 claude mcp add --scope user safe-ssh \
-  -e SAFE_SSH_MCP_CONFIG_DIR=/path/to/config \
-  -- bash /path/to/safe-ssh-mcp/safe_ssh_mcp.sh
+  -e "SAFE_SSH_MCP_CONFIG_DIR=<custom-config-directory>" \
+  -- bash "<your-workspace-directory>/safe-ssh-mcp/safe_ssh_mcp.sh"
 ```
 
 #### Codex CLI
 
 ```bash
 codex mcp add safe-ssh \
-  --env SAFE_SSH_MCP_CONFIG_DIR=/path/to/config \
-  -- bash /path/to/safe-ssh-mcp/safe_ssh_mcp.sh
+  --env "SAFE_SSH_MCP_CONFIG_DIR=<custom-config-directory>" \
+  -- bash "<your-workspace-directory>/safe-ssh-mcp/safe_ssh_mcp.sh"
 ```
 
 #### Other clients
 
-Add the variables to the server's `env` object:
+Add the variable to the existing server entry's `env` object:
 
 ```json
 {
   "env": {
-    "SAFE_SSH_MCP_CONFIG_DIR": "/path/to/config"
+    "SAFE_SSH_MCP_CONFIG_DIR": "<custom-config-directory>"
   }
 }
 ```
@@ -161,13 +165,13 @@ The dependencies are declared at the top of `safe_ssh_mcp.py`. The launcher reso
 
 ### Preload dependencies with uv
 
-When using uv, dependency resolution can be completed before the first MCP client start:
+From the checkout directory, dependency resolution can be completed before the first MCP client start:
 
 ```bash
 uv sync --script safe_ssh_mcp.py
 ```
 
-This step is optional.
+This optional step avoids dependency installation during the MCP client's startup deadline. Launcher commands below also assume the checkout directory is current.
 
 ### Select the script runner
 
@@ -178,13 +182,9 @@ bash safe_ssh_mcp.sh --runner uv
 bash safe_ssh_mcp.sh --runner pipx
 ```
 
-An explicit runner selection fails instead of falling back when that runner is unavailable or incompatible. Both `--runner pipx` and `--runner=pipx` are accepted. Use `--` before arguments intended for the Python server:
+An explicit runner selection fails instead of falling back when that runner is unavailable or incompatible. Both `--runner pipx` and `--runner=pipx` are accepted. `--` ends launcher option parsing and forwards the remaining arguments unchanged; the Python server currently defines no command-line options, so use `SAFE_SSH_MCP_CONFIG_DIR` for runtime configuration.
 
-```bash
-bash safe_ssh_mcp.sh --runner uv -- server-argument
-```
-
-In an MCP configuration, append `--runner` and the selected runner after the launcher path. For example, the Bash arguments for an explicit pipx selection are `/path/to/safe-ssh-mcp/safe_ssh_mcp.sh`, `--runner`, and `pipx`.
+In an MCP configuration, append `--runner` and the selected runner after the launcher path. For example, the Bash arguments for an explicit pipx selection are `<your-workspace-directory>/safe-ssh-mcp/safe_ssh_mcp.sh`, `--runner`, and `pipx`.
 
 ## Assessment prompts
 
@@ -195,21 +195,34 @@ Attach or reference a prompt and name the target host:
 
 ## SSH behavior
 
-Safe SSH MCP reads supported settings from `~/.ssh/config` and verifies every host against `~/.ssh/known_hosts`. Authentication is non-interactive, so encrypted keys must already be unlocked in the agent.
+Safe SSH MCP uses AsyncSSH's supported subset of `~/.ssh/config` settings and verifies every host against the explicit `~/.ssh/known_hosts` file. Unknown, changed, and revoked keys are rejected. Authentication is non-interactive, so encrypted keys must already be unlocked in the agent. See [supported SSH configuration](design.md#ssh-configuration-and-trust).
+
+`safe_ssh_list_hosts` lists concrete `Host` entries directly in the main SSH configuration file. It does not follow `Include` or evaluate `Match`, and it is not a host allowlist. You can still request an included alias, unlisted hostname, or address when host-key verification and authentication succeed.
 
 Connections are reused. New connections reread SSH configuration; restart the MCP server to replace an existing connection immediately. Windows-specific behavior is documented in the [Windows SSH setup guide](windows.md).
 
 ## Command policy
 
-Only policy-approved read-only command forms run. The agent discovers allowed syntax with `ssh_list_allowed_commands` and can check a pipeline with `ssh_validate_command`.
+The bundled policy permits inspection commands and constrains commands that also have modifying forms. The agent discovers the effective configuration progressively:
 
-File and system inspection is supported. Mutation, process control, unrestricted network access, shell redirection, substitution, and command chaining are blocked.
+1. Call `safe_ssh_list_allowed_commands()` for sorted top-level command names and their count.
+2. Call `safe_ssh_get_command_rules(commands=["docker", "head"])` for complete rules for selected commands, including subcommands, nested-command prefixes, flag/value rules, and pipeline limits. Requests must contain exact top-level names; an empty list or an unknown name is rejected.
+3. Use `safe_ssh_describe_validation_rules()` for shared matching and execution semantics, and optionally `safe_ssh_validate_command` to check a proposed pipeline before `safe_ssh_execute`.
 
-Commands have a 10-second timeout and 50 KB limit per output stream. There is no download or local file-write tool. See [design limits](design.md#limits).
+Discovery and dry runs do not make SSH connections. A valid dry run confirms policy acceptance; it does not check whether a command exists on the host or whether the remote account can run it. `safe_ssh_test_connection(host="example-web")` checks SSH connectivity and authentication.
+
+The bundled rules are designed to prevent system modification and limit network data exfiltration. Shell redirection, substitution, and command chaining cannot be expressed as structured operations; permitted argument values containing shell symbols are passed literally. The bundled curl policy restricts requests to allowlisted targets, using loopback by default. Custom policy authors remain responsible for the behavior they permit.
+
+Each pipeline has a 10-second execution deadline after SSH connection establishment and retains at most 50 KiB per output stream. Exceeding either output limit closes the command channel and returns a truncation marker with the exit status unavailable. There is no download or local file-write tool. See [design limits](design.md#limits).
 
 ### Docker containers
 
-The default [Docker policy](../config/policies/docker.yaml) uses generic subcommand and nested-command rules. It allows `docker -h` and `docker --help`, plus inspection through `ps`, `images`, `version`, `info`, `inspect`, `logs`, `stats`, `top`, and `port`. Each subcommand has its own allowed flags; root help flags are not inherited by subcommands.
+The default [Docker policy](../config/policies/docker.yaml) uses generic subcommand and nested-command rules. Each leaf has its own allowed flags; root help flags are not inherited by subcommands. It permits:
+
+- Root help: `docker -h` and `docker --help`.
+- Container and image inspection: `ps`, `images`, `version`, `info`, `inspect`, `logs`, `stats`, `top`, and `port`.
+- Swarm inspection: `node ls`, `node inspect`, `node ps`, `service ls`, `service inspect`, `service ps`, `stack ls`, `stack services`, and `stack ps`.
+- Disk usage: `system df`, including `--verbose`/`-v` and `--format`.
 
 Useful examples include `docker ps -a --no-trunc`, `docker inspect --format '{{json .}}' web`, `docker logs --tail 200 --since 30m web`, and `docker stats --no-stream`. Logs require an explicit `--tail` from 0 through 9999, and follow mode is not allowed. Stats require `--no-stream` to return one snapshot.
 
@@ -221,44 +234,45 @@ Existing configurations using `handler: docker` must replace that selector with 
 
 ## Agent-facing command format
 
-`ssh_execute` and `ssh_validate_command` accept structured pipeline stages containing a command and its arguments. Agents translate `|`-separated examples in assessment prompts into ordered stages; shell operators are not accepted as input. See [command validation](design.md#command-validation).
+`safe_ssh_execute` and `safe_ssh_validate_command` accept a `pipeline` array of structured stages, each containing exactly `command` and `arguments`. For example, execute a bounded container listing with:
+
+```json
+{
+  "host": "example-web",
+  "pipeline": [
+    {"command": "docker", "arguments": ["ps", "-a"]},
+    {"command": "head", "arguments": ["-n", "20"]}
+  ]
+}
+```
+
+For `safe_ssh_validate_command`, omit `host` and pass the same `pipeline` field. Agents translate `|`-separated examples in assessment prompts into ordered stages. A `|` argument remains literal; it does not create a pipeline. The returned exit status belongs to the final stage. See [command validation](design.md#command-validation).
 
 ## Allowing more commands
 
-The default command-specific policy is declared in YAML files under [config/policies/](../config/policies/). [core.yaml](../config/policies/core.yaml) contains the base read-only commands, and the repository also ships policies for curl, Docker, additional system information, and strictly constrained security-status commands. Use `ssh_list_allowed_commands` for the effective syntax. To add a command, put its policy in one of these YAML files or add another `*.yaml` or `*.yml` file and restart the server. [example.yaml.template](../config/policies/example.yaml.template) shows the format, and [policy.schema.json](../config/policies/policy.schema.json) provides editor validation and completion:
+The default command-specific policy is declared in YAML files under [config/policies/](../config/policies/). [core.yaml](../config/policies/core.yaml) contains the base inspection commands, and the repository also ships policies for curl, Docker, additional system information, and constrained security-status commands. Use `safe_ssh_list_allowed_commands` for names and `safe_ssh_get_command_rules` for effective syntax.
+
+To add a command, put its policy in an existing policy file or add another `*.yaml` or `*.yml` file in the effective configuration's `policies/` directory, then restart the server. To change an existing command, edit its owning definition; duplicate command names stop startup. Select the entries you need from [example.yaml.template](../config/policies/example.yaml.template) rather than copying existing command definitions into a second file. [policy.schema.json](../config/policies/policy.schema.json) provides editor validation and completion.
+
+For example, add a block-device inspection command with explicit flags and no positional operands:
 
 ```yaml
 lsblk:
-  mode: permissive
-
-traceroute:
   mode: whitelist
   flags:
-    - flag: -m
-      value_pattern: '(?:[1-9]|[12][0-9]|30)'
-    - flag: -w
-      value_pattern: '[0-9]+(?:\.[0-9]+)?'
-    - flag: -q
-      value_pattern: '[1-9][0-9]?'
-  require_flags:
-    - -m
-
-systemctl:
-  mode: whitelist
+    - flag: --json
+      value_pattern: null
+    - flag: --output
+      value_pattern: '(?:NAME|SIZE|TYPE|MOUNTPOINT)(?:,(?:NAME|SIZE|TYPE|MOUNTPOINT)){0,3}'
   positional_variants:
-    - ['(?:list-units|list-unit-files)']
-    - args:
-        - '(?:status|is-active|is-enabled|is-failed|show|list-dependencies|cat)'
-      rest_pattern: '[A-Za-z0-9_.@:-]{1,128}'
-      min_rest: 0
-      max_rest: 10
+    - []
 ```
 
 Every generic command and subcommand must explicitly declare `mode: permissive`, `mode: blacklist`, or `mode: whitelist`. There is no default, and a child does not inherit its parent's mode. Missing or invalid modes stop startup. Handler policies such as `handler: curl` use their handler's validation and must not declare `mode`. Older custom generic policies that omitted `mode` previously selected permissive behavior; add `mode: permissive` to preserve that behavior, or choose another mode and declare its rules explicitly. The bundled policies already declare their modes.
 
-Every flag object must contain `value_pattern`. A string requires one value and validates it with a case-sensitive full-string regular-expression match; `null` means the flag accepts no value. The equivalent forms `--flag value` and `--flag=value`, and `-n value` and `-nvalue`, receive the same validation result. Set `allows_flag_bundling: true` only when the command supports combined short flags; the default is `false`.
+Every flag object must contain `value_pattern`. A string requires one value and validates it with a full-string Python regular-expression match, case-sensitive unless the pattern uses inline flags; `null` means the flag accepts no value. Generic policies accept equivalent forms `--flag value` and `--flag=value`, and `-n value` and `-nvalue`. Set `allows_flag_bundling: true` only when the command supports combined short flags; the default is `false`. The curl handler has its own grammar, reported in `handler_rules` by `safe_ssh_get_command_rules`.
 
-In whitelist mode, `positional_variants` defines complete allowed positional sequences. Array variants have exact arity. Bounded-rest variants use `args`, `rest_pattern`, `min_rest`, and `max_rest`. Omit `positional_variants` only when unrestricted positional arguments are safe. It is rejected in blacklist and permissive modes because the values of undeclared flags cannot be distinguished reliably from positional arguments.
+In whitelist mode, `positional_variants` defines complete allowed positional sequences. Array variants have exact arity. Bounded-rest variants use `args`, `rest_pattern`, `min_rest`, and `max_rest`. Set `positional_variants: [[]]` to reject positional operands. Flat whitelist policies without this field allow unrestricted positional arguments; routing nodes instead default to no root positionals. The field is rejected in blacklist and permissive modes because the values of undeclared flags cannot be distinguished reliably from positional arguments.
 
 ### Subcommand and nested-command rules
 
@@ -269,13 +283,15 @@ In whitelist mode, `subcommands` maps a leading token to a child policy, which c
 ```yaml
 docker:
   mode: whitelist
+  positional_variants:
+    - []
   nested_commands:
     - ['exec', '[^-].*']
 ```
 
-Every pattern matches one entire raw argument, with case-sensitive matching. After `exec` and the container reference, the remaining tokens are validated as a command and its arguments using the effective policies. The split happens before parsing flags. Prefix matching precedes subcommand dispatch; ambiguous matches, missing commands, failed inner validation, and command cycles are rejected without fallback. An empty prefix delegates all arguments but still requires a command. Nesting and subcommand depth are each limited to eight levels. Removing `nested_commands` disables delegation without affecting inspection subcommands.
+Every pattern matches one entire raw argument, with case-sensitive matching unless inline regex flags specify otherwise. After `exec` and the container reference, the remaining tokens are validated as a command and its arguments using the effective policies. The split happens before parsing flags. Prefix matching precedes subcommand dispatch; ambiguous matches, missing commands, failed inner validation, and command cycles are rejected without fallback. An empty prefix delegates all arguments but still requires a command. Nesting and subcommand depth are each limited to eight levels. Removing `nested_commands` disables delegation without affecting inspection subcommands.
 
-Use `ssh_list_allowed_commands` for the complete effective policy tree and `ssh_describe_validation_rules` for live routing rules and limits. See [technical design](design.md#subcommands-and-nested-commands) for dispatch order and startup validation.
+Use `safe_ssh_get_command_rules(commands=["docker"])` for the effective Docker policy tree and pipeline limits, and `safe_ssh_describe_validation_rules` for shared validation semantics. Include inner command names in the rules request when planning nested execution. See [technical design](design.md#subcommands-and-nested-commands) for dispatch order and startup validation.
 
 Policy files are trusted operator configuration and must not come from remote or untrusted sources. They own command names, modes, flags, positional grammars, and handler configuration such as curl targets. Python owns pipeline shape, safe serialization, structural limits, and specialized value-aware handler implementations; these executable checks are not replaceable through YAML.
 
@@ -285,7 +301,7 @@ All `*.yaml` and `*.yml` files are loaded in filename order. Every command must 
 
 ## Logs
 
-Each server process writes a log file named `{YYMMDDHHmm}-{pid}.log` to the `logging.directory` selected by the effective `config.yaml`, which is `config/.logs/` by default. It records connections, every executed command with its exit code, and every rejected command with the reason.
+Each server process writes a log file named `{YYMMDDHHmm}-{pid}.log` to the `logging.directory` selected by the effective `config.yaml`, which is `config/.logs/` by default. It records connections, execution requests and their exit status when available, and rejected execution requests with the reason. Discovery and policy dry runs do not log an execution.
 
 At startup, the server removes inactive session logs whose last modification time is more than `logging.retention_days` days old, defaulting to 30 days. Cleanup considers only regular, non-symlink files with the server's filename format directly inside the effective log directory; it does not traverse subdirectories. The current log and files whose PID is still running or cannot be checked are preserved. PID reuse can therefore preserve an old log until a later startup.
 

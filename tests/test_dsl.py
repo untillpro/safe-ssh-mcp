@@ -11,6 +11,7 @@
 """Regression tests for the structured command-policy DSL."""
 
 import json
+import shlex
 import sys
 import unittest
 from pathlib import Path
@@ -391,6 +392,297 @@ class DockerPolicyTests(unittest.TestCase):
             )
         self.assertTrue(inspection_accepted, msg=inspection_reason)
         self.assertFalse(exec_accepted)
+
+
+class RestrictedCqlPolicyTests(unittest.TestCase):
+    QUERY: ClassVar[str] = (
+        "SELECT cluster_name, release_version FROM system.local LIMIT 1"
+    )
+    QUERY_PATTERN: ClassVar[str] = (
+        r"[ \t]*(?ai:(?![^;]*(?:--|//|/\*|\bPER[ \t]+PARTITION\b"
+        r"|\bGROUP[ \t]+BY\b|\bALLOW[ \t]+FILTERING\b|\bBYPASS[ \t]+CACHE\b"
+        r"|\bUSING[ \t]+TIMEOUT\b"
+        r'|\b(?:COUNT|SUM|AVG|MIN|MAX)\b"?[ \t]*\())'
+        r"SELECT\b[^;\x00-\x08\x0A-\x1F\x7F]*"
+        r"\bLIMIT[ \t]+(?:[1-9][0-9]{0,2}|1000))[ \t]*(?:;[ \t]*)?"
+    )
+    ADDRESS_PATTERN: ClassVar[str] = (
+        r"(?:127\.0\.0\.1|10(?:\.[0-9]{1,3}){3}|192\.168(?:\.[0-9]{1,3}){2}"
+        r"|172\.(?:1[6-9]|2[0-9]|3[01])(?:\.[0-9]{1,3}){2})"
+    )
+    POSITIONAL_VARIANTS: ClassVar[list[list[str]]] = [
+        [],
+        [ADDRESS_PATTERN],
+        [ADDRESS_PATTERN, "9042"],
+    ]
+
+    def setUp(self) -> None:
+        # Exercise an operator-supplied policy without requiring a private clone.
+        document: dict[str, object] = {
+            "cqlsh": {
+                "mode": "whitelist",
+                "flags": [{"flag": "-e", "value_pattern": self.QUERY_PATTERN}],
+                "require_flags": ["-e"],
+                "positional_variants": self.POSITIONAL_VARIANTS,
+            },
+            "docker": raw_policy_file("docker.yaml", "docker"),
+        }
+        content: str = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
+        with TemporaryDirectory() as temp_dir:
+            policy_dir = Path(temp_dir)
+            (policy_dir / "inspection.yaml").write_text(content, encoding="utf-8")
+            self.policies: dict[str, CommandPolicy] = load_command_policies(policy_dir)
+        registry = patch.dict(COMMAND_POLICIES, self.policies, clear=True)
+        registry.start()
+        self.addCleanup(registry.stop)
+
+    @staticmethod
+    def cql_pipelines(*arguments: str) -> tuple[list[CommandStage], ...]:
+        return (
+            single("cqlsh", *arguments),
+            single("docker", "exec", "scylla", "cqlsh", *arguments),
+        )
+
+    def assert_cql(self, expected: bool, *arguments: str) -> None:
+        for pipeline in self.cql_pipelines(*arguments):
+            with self.subTest(pipeline=pipeline):
+                accepted, reason = validate_pipeline(pipeline)
+                self.assertEqual(accepted, expected, msg=reason)
+
+    def test_select_statements_are_accepted(self) -> None:
+        for query in (
+            self.QUERY,
+            self.QUERY.lower(),
+            "sElEcT CLUSTER_NAME,RELEASE_VERSION fRoM SYSTEM.LOCAL lImIt 1",
+            " \tSELECT\tcluster_name \t,\trelease_version\tFROM\tsystem.local\tLIMIT\t1\t ",
+            "SELECT * FROM app.orders LIMIT 1000",
+            "SELECT*FROM app.orders LIMIT 10",
+            "SELECT note FROM app.orders WHERE note = 'it''s' LIMIT 10",
+            'SELECT "Quoted" FROM app.orders WHERE id = 1 LIMIT 999',
+            "SELECT note FROM app.orders WHERE note = 'Gr\u00fc\u00dfe' LIMIT 1",
+            "SELECT keyspace_name, replication FROM system_schema.keyspaces LIMIT 100",
+            "SELECT DISTINCT id FROM app.orders LIMIT 100",
+            "SELECT count, sum FROM app.totals LIMIT 10",
+        ):
+            for statement in (query, f"{query};", f"{query} ; "):
+                self.assert_cql(True, "-e", statement)
+                self.assert_cql(True, f"-e{statement}")
+
+    def test_semicolon_is_accepted_only_at_the_end(self) -> None:
+        for index in range(len(self.QUERY)):
+            query = f"{self.QUERY[:index]};{self.QUERY[index:]}"
+            self.assert_cql(False, "-e", query)
+        for query in (
+            f"{self.QUERY};;",
+            f"{self.QUERY}; ;",
+            "SELECT note FROM app.orders WHERE note = 'a;b' LIMIT 10",
+        ):
+            self.assert_cql(False, "-e", query)
+
+    def test_additional_statements_are_rejected(self) -> None:
+        for query in (
+            f"{self.QUERY}; TRUNCATE app.orders;",
+            f"{self.QUERY}; TRUNCATE app.orders LIMIT 1",
+            f"{self.QUERY}\nTRUNCATE app.orders LIMIT 1",
+            f"TRUNCATE app.orders; {self.QUERY}",
+            f"TRUNCATE app.orders {self.QUERY}",
+            # A string-aware pattern would read these separators as string content.
+            "SELECT 1 /* ' */; TRUNCATE app.orders; /* ' */ LIMIT 1",
+            "SELECT $$ ' $$; TRUNCATE app.orders; SELECT $$ ' $$ LIMIT 1",
+            f'"{self.QUERY}"',
+        ):
+            self.assert_cql(False, "-e", query)
+            self.assert_cql(False, f"-e{query}")
+
+    def test_statement_must_start_with_the_select_keyword(self) -> None:
+        for query in (
+            "SELECTED FROM app.orders LIMIT 1",
+            "SELECT_ROWS FROM app.orders LIMIT 1",
+            "SELECT1 LIMIT 1",
+            self.QUERY.replace("SELECT", "\u017fELECT"),
+            f"\u00a0{self.QUERY}",
+            f"/* comment */ {self.QUERY}",
+            f"-- comment {self.QUERY}",
+            f"({self.QUERY})",
+        ):
+            self.assert_cql(False, "-e", query)
+
+    def test_line_breaks_and_control_characters_are_rejected(self) -> None:
+        for query in (
+            f"{self.QUERY}\n",
+            f"{self.QUERY}\r\n",
+            f"{self.QUERY};\n",
+            self.QUERY.replace(" FROM ", "\nFROM "),
+            self.QUERY.replace(" FROM ", "\rFROM "),
+            self.QUERY.replace(" FROM ", "\x00 FROM "),
+            self.QUERY.replace(" FROM ", "\x1b[0m FROM "),
+            self.QUERY.replace(" FROM ", "\x7f FROM "),
+        ):
+            self.assert_cql(False, "-e", query)
+
+    def test_limit_is_required_and_bounded(self) -> None:
+        for query in (
+            "SELECT * FROM app.orders",
+            "SELECT * FROM app.orders WHERE id = 1",
+            "SELECT * FROM app.orders LIMIT",
+            "SELECT * FROM app.orders LIMIT 0",
+            "SELECT * FROM app.orders LIMIT 01",
+            "SELECT * FROM app.orders LIMIT 1001",
+            "SELECT * FROM app.orders LIMIT 10000",
+            "SELECT * FROM app.orders LIMIT -1",
+            "SELECT * FROM app.orders LIMIT ?",
+            "SELECT * FROM app.orders LIMIT 1.0",
+            "SELECT * FROM app.orders XLIMIT 10",
+            "SELECT * FROM app.orders WHERE note = 'x LIMIT 10'",
+        ):
+            self.assert_cql(False, "-e", query)
+
+    def test_costly_clauses_are_rejected_on_either_side_of_limit(self) -> None:
+        for clause in (
+            "ALLOW FILTERING",
+            "allow\tfiltering",
+            "BYPASS CACHE",
+            "USING TIMEOUT 1h",
+            "using  timeout 1h",
+        ):
+            self.assert_cql(False, "-e", f"{self.QUERY} {clause}")
+            self.assert_cql(False, "-e", f"SELECT * FROM app.orders {clause} LIMIT 10")
+
+    def test_aggregates_and_grouping_are_rejected_despite_limit(self) -> None:
+        for query in (
+            "SELECT COUNT(*) FROM app.orders LIMIT 1",
+            "select count (*) from app.orders limit 1",
+            'SELECT "count"(*) FROM app.orders LIMIT 1',
+            "SELECT system.count(*) FROM app.orders LIMIT 1",
+            "SELECT SUM(total) FROM app.orders LIMIT 1",
+            "SELECT AVG(total) FROM app.orders LIMIT 1",
+            "SELECT MIN(total) FROM app.orders LIMIT 1",
+            "SELECT MAX(total) FROM app.orders LIMIT 1",
+            "SELECT id FROM app.orders GROUP BY id LIMIT 1",
+        ):
+            self.assert_cql(False, "-e", query)
+
+    def test_partition_limits_and_comments_cannot_fake_the_limit(self) -> None:
+        for query in (
+            "SELECT * FROM app.orders PER PARTITION LIMIT 10",
+            "SELECT * FROM app.orders per\tpartition limit 10",
+            "SELECT * FROM app.orders -- LIMIT 10",
+            "SELECT * FROM app.orders // LIMIT 10",
+            "SELECT * FROM app.orders /* LIMIT 10",
+            "SELECT * FROM app.orders /* comment */ LIMIT 10",
+            "SELECT * FROM app.logs WHERE url = 'http://x' LIMIT 10",
+        ):
+            self.assert_cql(False, "-e", query)
+
+    def test_private_address_and_standard_port_are_accepted(self) -> None:
+        for address in (
+            "127.0.0.1",
+            "10.0.1.4",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.10",
+        ):
+            self.assert_cql(True, address, "-e", self.QUERY)
+            self.assert_cql(True, address, "9042", "-e", self.QUERY)
+            self.assert_cql(True, "-e", self.QUERY, address, "9042")
+
+    def test_public_addresses_hostnames_and_other_ports_are_rejected(self) -> None:
+        for operands in (
+            ("8.8.8.8",),
+            ("8.8.8.8", "9042"),
+            ("172.15.0.1",),
+            ("172.32.0.1",),
+            ("192.169.0.1",),
+            ("127.0.0.2",),
+            ("10.0.1",),
+            ("10.0.1.4.example.com",),
+            ("example.com",),
+            ("9042",),
+            ("10.0.1.4", "19042"),
+            ("10.0.1.4", "9042", "extra"),
+        ):
+            self.assert_cql(False, "-e", self.QUERY, *operands)
+
+    def test_query_is_rendered_as_one_literal_shell_argument(self) -> None:
+        query = (
+            "SELECT $(id), `id`, 'x' | tee /tmp/a > /tmp/b && id "
+            "FROM app.orders LIMIT 1"
+        )
+        self.assert_cql(True, "-e", query)
+        for pipeline in self.cql_pipelines("-e", query):
+            with self.subTest(pipeline=pipeline):
+                arguments = shlex.split(render_pipeline(pipeline))
+                self.assertEqual(arguments[-2:], ["-e", query])
+
+    def test_execute_flag_is_required_and_other_arguments_are_rejected(self) -> None:
+        cases: tuple[tuple[str, ...], ...] = (
+            (),
+            (self.QUERY,),
+            ("-e",),
+            ("-e", ""),
+            ("--execute", self.QUERY),
+            ("-f", "/tmp/queries.cql"),
+            ("-e", self.QUERY, "--file", "/tmp/queries.cql"),
+            ("-e", self.QUERY, "--cqlshrc", "/tmp/cqlshrc"),
+            ("-e", self.QUERY, "--browser", "/bin/sh"),
+            ("-e", self.QUERY, "--tty"),
+            ("-e", self.QUERY, "192.0.2.1"),
+            ("-e", self.QUERY, "--", "9042"),
+            ("-e", self.QUERY, "extra"),
+            ("-e", self.QUERY, "-e", "TRUNCATE app.orders"),
+            ("-e", "TRUNCATE app.orders", "-e", self.QUERY),
+        )
+        for arguments in cases:
+            self.assert_cql(False, *arguments)
+
+    def test_modifying_statements_and_cqlsh_file_commands_are_rejected(self) -> None:
+        for query in (
+            "TRUNCATE app.orders",
+            "INSERT INTO app.orders (id) VALUES (1)",
+            "UPDATE app.orders SET status = 'done' WHERE id = 1",
+            "DELETE FROM app.orders WHERE id = 1",
+            "DROP TABLE app.orders",
+            "ALTER TABLE app.orders ADD note text",
+            "CREATE KEYSPACE extra WITH replication = {}",
+            "SOURCE '/tmp/queries.cql'",
+            "CAPTURE '/tmp/results.txt'",
+            "COPY app.orders TO '/tmp/orders.csv'",
+            "BEGIN BATCH DELETE FROM app.orders WHERE id = 1 APPLY BATCH",
+            "USE app",
+            "CONSISTENCY ALL",
+            "DESCRIBE SCHEMA",
+        ):
+            self.assert_cql(False, "-e", query)
+            self.assert_cql(False, "-e", f"{query} LIMIT 1")
+
+    def test_discovery_exposes_the_effective_query_template(self) -> None:
+        raw_result: object = json.loads(safe_ssh_get_command_rules(["cqlsh"]))
+        result = cast(dict[str, object], raw_result)
+        commands = cast(dict[str, dict[str, object]], result["commands"])
+        cqlsh = commands["cqlsh"]
+        self.assertEqual(cqlsh["mode"], "whitelist")
+        self.assertEqual(cqlsh["required_flags"], ["-e"])
+        self.assertEqual(cqlsh["positional_variants"], self.POSITIONAL_VARIANTS)
+        self.assertEqual(
+            cqlsh["allowed_flags"],
+            [{"flag": "-e", "value_pattern": self.QUERY_PATTERN}],
+        )
+        self.assertNotIn("handler", cqlsh)
+
+    def test_dry_runs_and_discovery_do_not_connect_to_ssh(self) -> None:
+        with patch("safe_ssh_mcp.get_ssh_connection") as connection:
+            for query, expected_prefix in (
+                (self.QUERY, "VALID:"),
+                (f"{self.QUERY};", "VALID:"),
+                (f"{self.QUERY}; TRUNCATE app.orders", "INVALID:"),
+                ("SELECT * FROM app.orders", "INVALID:"),
+            ):
+                for pipeline in self.cql_pipelines("-e", query):
+                    with self.subTest(pipeline=pipeline):
+                        result = safe_ssh_validate_command(pipeline)
+                        self.assertTrue(result.startswith(expected_prefix), msg=result)
+            safe_ssh_get_command_rules(["cqlsh", "docker"])
+        connection.assert_not_called()
 
 
 class GenericDispatchTests(unittest.TestCase):

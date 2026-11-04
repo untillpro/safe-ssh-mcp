@@ -1244,7 +1244,7 @@ def _curl_consume_value(
     if compiled_pattern.fullmatch(value) is None:
         return (
             False,
-            f"Flag '{flag}' received value {value!r}, which does not match value_pattern {rule['value_pattern']!r}; matching is case-sensitive and applies to the complete value",
+            f"Flag '{flag}' received value {value!r}, which does not match value_pattern {rule['value_pattern']!r}; matching is case-sensitive by default and applies to the complete value",
         )
 
     if flag == "--url":
@@ -1415,7 +1415,7 @@ def _validate_flag_value(
     if compiled_pattern.fullmatch(value) is None:
         return _generic_rejection(
             cmd_name,
-            f"flag '{flag}' received value {value!r}, which does not match value_pattern {rule['value_pattern']!r}; matching is case-sensitive and applies to the complete value",
+            f"flag '{flag}' received value {value!r}, which does not match value_pattern {rule['value_pattern']!r}; matching is case-sensitive by default and applies to the complete value",
         )
     return True, "OK"
 
@@ -1457,7 +1457,7 @@ def _validate_positional_arguments(
 
     return _generic_rejection(
         cmd_name,
-        f"positional arguments {positionals!r} do not match any positional_variants rule; matching is case-sensitive and applies to each complete token",
+        f"positional arguments {positionals!r} do not match any positional_variants rule; matching is case-sensitive by default and applies to each complete token",
     )
 
 
