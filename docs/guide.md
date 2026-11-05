@@ -54,7 +54,6 @@ Replace `<your-workspace-directory>` with the absolute parent directory in which
 ```bash
 cd "<your-workspace-directory>"
 git clone https://github.com/untillpro/safe-ssh-mcp
-cd safe-ssh-mcp
 ```
 
 ### 3. Add the server to your MCP client
