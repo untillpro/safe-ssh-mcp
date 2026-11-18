@@ -101,7 +101,9 @@ class CommandPolicy(TypedDict, total=False):
 
 class CommandInfo(TypedDict, total=False):
     mode: str
+    allowed_valueless_flags: list[str]
     allowed_flags: list[FlagPolicy]
+    blocked_valueless_flags: list[str]
     blocked_flags: list[FlagPolicy]
     required_flags: list[str]
     allows_flag_bundling: bool
@@ -322,11 +324,12 @@ SSH_CONFIG_PATH = Path.home() / ".ssh" / "config"
 KNOWN_HOSTS_PATH = Path.home() / ".ssh" / "known_hosts"
 WINDOWS_OPENSSH_AGENT_PIPE = r"\\.\pipe\openssh-ssh-agent"
 
-_POLICY_MODES = frozenset({"permissive", "blacklist", "whitelist"})
+_POLICY_MODES = frozenset({"blacklist", "whitelist"})
 _GENERIC_POLICY_FIELDS = frozenset(
     {
         "mode",
         "flags",
+        "valueless_flags",
         "require_flags",
         "allows_flag_bundling",
         "positional_variants",
@@ -338,6 +341,7 @@ _CURL_HANDLER_POLICY_FIELDS = frozenset(
     {
         "handler",
         "flags",
+        "valueless_flags",
         "require_flags",
         "allows_flag_bundling",
         "require_first",
@@ -471,14 +475,43 @@ def _compile_policy_pattern(pattern: str, context: str) -> re.Pattern[str]:
         ) from error
 
 
+def _is_flag_name(raw_name: object) -> bool:
+    return (
+        isinstance(raw_name, str)
+        and raw_name.startswith("-")
+        and raw_name not in {"-", "--"}
+        and "=" not in raw_name
+        and not any(character.isspace() for character in raw_name)
+    )
+
+
 def _normalize_flags(
-    raw_flags: object, context: str
+    raw_flags: object, raw_valueless_flags: object, context: str
 ) -> tuple[list[FlagPolicy], dict[str, re.Pattern[str] | None]]:
+    """Merge 'valueless_flags' names and 'flags' objects into one flag list."""
     if not isinstance(raw_flags, list):
         raise ValueError(f"{context} field 'flags' must be an array")
+    if not isinstance(raw_valueless_flags, list):
+        raise ValueError(
+            f"{context} field 'valueless_flags' must be an array of flag names"
+        )
 
     flags: list[FlagPolicy] = []
     compiled_flags: dict[str, re.Pattern[str] | None] = {}
+    valueless_names: list[object] = cast(list[object], raw_valueless_flags)
+    for index, raw_valueless_name in enumerate(valueless_names):
+        flag_context = f"{context} valueless_flags[{index}]"
+        if not isinstance(raw_valueless_name, str) or not _is_flag_name(
+            raw_valueless_name
+        ):
+            raise ValueError(
+                f"{flag_context} must be a flag name string; quote names that YAML reads as numbers, such as '-1'"
+            )
+        if raw_valueless_name in compiled_flags:
+            raise ValueError(f"{flag_context} duplicates flag '{raw_valueless_name}'")
+        flags.append({"flag": raw_valueless_name, "value_pattern": None})
+        compiled_flags[raw_valueless_name] = None
+
     for index, raw_flag in enumerate(raw_flags):
         flag_context = f"{context} flags[{index}]"
         if not isinstance(raw_flag, dict):
@@ -497,13 +530,7 @@ def _normalize_flags(
             )
 
         raw_name = flag_data["flag"]
-        if (
-            not isinstance(raw_name, str)
-            or not raw_name.startswith("-")
-            or raw_name in {"-", "--"}
-            or "=" in raw_name
-            or any(character.isspace() for character in raw_name)
-        ):
+        if not isinstance(raw_name, str) or not _is_flag_name(raw_name):
             raise ValueError(f"{flag_context} field 'flag' must be a flag name")
         if raw_name in compiled_flags:
             raise ValueError(f"{flag_context} duplicates flag '{raw_name}'")
@@ -691,22 +718,21 @@ def _normalize_command_policy(
     if uses_generic_policy:
         if "mode" not in config_data:
             raise ValueError(
-                f"{context} must explicitly declare 'mode' as permissive, blacklist, or whitelist"
+                f"{context} must explicitly declare 'mode' as whitelist or blacklist"
             )
         raw_mode = config_data["mode"]
-        if not isinstance(raw_mode, str) or raw_mode not in _POLICY_MODES:
+        if raw_mode == "permissive":
             raise ValueError(
-                f"{context} field 'mode' must be permissive, blacklist, or whitelist"
+                f"{context} uses 'mode: permissive', which was removed; list the allowed flags with 'mode: whitelist', or use 'mode: blacklist' without flags to keep allowing every flag"
             )
+        if not isinstance(raw_mode, str) or raw_mode not in _POLICY_MODES:
+            raise ValueError(f"{context} field 'mode' must be whitelist or blacklist")
         normalized["mode"] = raw_mode
 
     raw_flags = config_data.get("flags", [])
-    flags, compiled_flags = _normalize_flags(raw_flags, context)
-    if normalized.get("mode") == "permissive" and flags:
-        raise ValueError(
-            f"{context} cannot declare 'flags' in permissive mode because all flags are allowed"
-        )
-    if flags or "flags" in config_data:
+    raw_valueless_flags = config_data.get("valueless_flags", [])
+    flags, compiled_flags = _normalize_flags(raw_flags, raw_valueless_flags, context)
+    if flags or "flags" in config_data or "valueless_flags" in config_data:
         normalized["flags"] = flags
     normalized["_compiled_flags"] = compiled_flags
 
@@ -868,12 +894,12 @@ def _normalize_command_policy(
 #     and sudo -n -l to list the account's privileges (see ADR-007)
 #
 # Every generic command and subcommand must explicitly declare its mode.
-# Mode assignment:
-#   - permissive: command has NO flags/features that modify the system
-#   - blacklist:  command has a FEW dangerous flags among many safe ones
-#                 (find, sort, date, journalctl, xmllint, yq, ss)
-#   - whitelist:  command has flags that write/extract/execute, only safe
-#                 flags are listed explicitly
+# Mode assignment (ADR-008):
+#   - whitelist:  only the listed flags are accepted; every shipped policy
+#                 uses this mode and lists the most useful read-only flags
+#   - blacklist:  every flag is accepted except the listed ones; kept for
+#                 custom configurations and discouraged, because it allows
+#                 whatever it does not name
 #   - handler:    generic flag/positional validation is insufficient; a
 #                 command-specific Python handler inspects values (curl)
 #   - routing:    subcommands and nested_commands reuse the policy engine
@@ -1632,9 +1658,9 @@ def _validate_generic_command(
         if mode == "whitelist":
             return _generic_rejection(cmd_name, f"flag syntax '{token}' is not allowed")
 
-        # Permissive and blacklist modes allow undeclared flags. Their values
-        # cannot be distinguished from positionals, so positional_variants is
-        # deliberately forbidden for these modes.
+        # Blacklist mode allows undeclared flags. Their values cannot be
+        # distinguished from positionals, so positional_variants is
+        # deliberately forbidden for this mode.
         index += 1
 
     for required_flag in required_flags:
@@ -2410,10 +2436,23 @@ def _describe_command_policy(config: CommandPolicy) -> CommandInfo:
     if handler_name:
         info["handler"] = handler_name
     if "flags" in config:
+        # Flags without a value are reported as names to keep responses small.
+        valueless_flags = [
+            flag["flag"] for flag in config["flags"] if flag["value_pattern"] is None
+        ]
+        value_flags = [
+            flag for flag in config["flags"] if flag["value_pattern"] is not None
+        ]
         if config.get("mode") == "blacklist":
-            info["blocked_flags"] = config["flags"]
+            if valueless_flags:
+                info["blocked_valueless_flags"] = valueless_flags
+            if value_flags or not valueless_flags:
+                info["blocked_flags"] = value_flags
         else:
-            info["allowed_flags"] = config["flags"]
+            if valueless_flags:
+                info["allowed_valueless_flags"] = valueless_flags
+            if value_flags or not valueless_flags:
+                info["allowed_flags"] = value_flags
     if "require_flags" in config:
         info["required_flags"] = config["require_flags"]
     if "targets" in config:
@@ -2464,7 +2503,7 @@ def safe_ssh_list_allowed_commands() -> str:
         "total_commands": len(COMMAND_POLICIES),
         "commands": sorted(COMMAND_POLICIES),
     }
-    return json.dumps(result, indent=2)
+    return json.dumps(result, separators=(",", ":"))
 
 
 @mcp.tool()
@@ -2528,7 +2567,8 @@ def safe_ssh_get_command_rules(commands: list[str]) -> str:
     except ValueError as error:
         raise ToolError(str(error)) from error
 
-    return json.dumps(result, indent=2)
+    # Unindented output keeps discovery responses small for agents.
+    return json.dumps(result, separators=(",", ":"))
 
 
 @mcp.tool()
@@ -2540,7 +2580,7 @@ def safe_ssh_describe_validation_rules() -> str:
     return """Validation semantics:
 - Arguments are literal; shell operators, substitutions, expansions, and globs are not interpreted.
 - Stages form a pipeline; its exit status is the final stage's exit status.
-- value_pattern: null means no value; a regex requires exactly one value.
+- allowed_valueless_flags and blocked_valueless_flags take no value; each allowed_flags or blocked_flags entry requires exactly one value matching its value_pattern.
 - Regex patterns use case-sensitive full-string matching.
 - Generic value-taking flags accept --flag=value or --flag value, and -n100 or -n 100.
 - Generic short-flag bundles require allows_flag_bundling; -- ends flag parsing.

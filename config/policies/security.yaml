@@ -17,15 +17,8 @@ nft:
 iptables:
   mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-L, -n, -v, -x]
   flags:
-    - flag: -L
-      value_pattern: null
-    - flag: -n
-      value_pattern: null
-    - flag: -v
-      value_pattern: null
-    - flag: -x
-      value_pattern: null
     - flag: -t
       value_pattern: '(?:filter|nat|mangle|raw|security)'
   require_flags:
@@ -37,15 +30,8 @@ iptables:
 ip6tables:
   mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-L, -n, -v, -x]
   flags:
-    - flag: -L
-      value_pattern: null
-    - flag: -n
-      value_pattern: null
-    - flag: -v
-      value_pattern: null
-    - flag: -x
-      value_pattern: null
     - flag: -t
       value_pattern: '(?:filter|nat|mangle|raw|security)'
   require_flags:
@@ -66,9 +52,7 @@ aa-status:
 
 auditctl:
   mode: whitelist
-  flags:
-    - flag: -s
-      value_pattern: null
+  valueless_flags: [-s]
   require_flags:
     - -s
   positional_variants:

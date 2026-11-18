@@ -8,7 +8,7 @@ Perform a best-effort, point-in-time security posture assessment of the requeste
 2. Use `safe_ssh_validate_command` when uncertain about a command or pipeline. Do not work around a rejection.
 3. The examples below use shell notation for readability. For `safe_ssh_execute`, submit each command as a structured `{command, arguments}` stage and convert each `|`-separated segment into an ordered pipeline stage.
 4. Keep checks bounded. Do not use recursive whole-filesystem searches, interactive or follow-mode commands, outbound probes, package updates, or network scans.
-5. Never use `sudo`. If a binary is missing, permission is denied, a file is absent, output is truncated, or a check times out, classify the check as Not Assessed and record the reason.
+5. When a check fails only because permission is denied, and discovery lists `sudo`, retry it once as `sudo -n -- <the same command>`. `sudo -n -l` shows what the account may run; use no other `sudo` form. If `sudo` is not allowed, reports that a password is required, or the retry fails, or if a binary is missing, a file is absent, output is truncated, or a check times out, classify the check as Not Assessed and record the reason.
 6. Do not change the host. Recommendations are advice only and must not be executed.
 
 ## Data minimization
@@ -18,6 +18,7 @@ Perform a best-effort, point-in-time security posture assessment of the requeste
 - Do not collect complete authentication logs or unrelated application payloads. Request only bounded, directly relevant evidence.
 - Prefer metadata from `stat` or bounded summaries when content is unnecessary.
 - Do not expose sensitive values in the report. Redact any credential-like value encountered unexpectedly.
+- These limits apply unchanged to commands run through `sudo`. Elevated access is for completing a listed check, not for widening what is read.
 
 ## Evidence collection
 
@@ -49,7 +50,7 @@ Treat absent settings, `Include`, and `Match` blocks carefully. File text alone 
 - `iptables -L -n -v`
 - `ip6tables -L -n -v`
 
-Use `which` to avoid repeatedly invoking firewall tools which are not installed. Run only the exact read-only forms exposed by `safe_ssh_get_command_rules`. Do not use `sudo`, and do not infer that a firewall is absent merely because the SSH account cannot read its state. Distinguish loopback, specific-interface, and wildcard listeners, and use host-role context before judging exposure.
+Use `which` to avoid repeatedly invoking firewall tools which are not installed. Run only the exact read-only forms exposed by `safe_ssh_get_command_rules`. Firewall tools usually need root: when a form fails with a permission error, retry it through `sudo -n --` as the execution contract describes. Do not infer that a firewall is absent merely because its state could not be read. Distinguish loopback, specific-interface, and wildcard listeners, and use host-role context before judging exposure.
 
 ### Accounts and critical-file metadata
 

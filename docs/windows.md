@@ -67,9 +67,9 @@ Include C:/Users/operator/.ssh/config.d/*.conf
 
 Backslash-form absolute `Include` paths are not supported. Safe SSH MCP does not rewrite or separately expand them.
 
-## Host discovery with `ssh_list_hosts`
+## Host discovery with `safe_ssh_list_hosts`
 
-The `ssh_list_hosts` tool is only a best-effort list of concrete `Host` entries in the main config file. It does not follow `Include` or evaluate `Match`, and it is not an allowlist. Safe SSH MCP can still connect to included aliases, unlisted hostnames, and addresses when their host keys are trusted and authentication succeeds.
+The `safe_ssh_list_hosts` tool is only a best-effort list of concrete `Host` entries in the main config file. It does not follow `Include` or evaluate `Match`, and it is not an allowlist. Safe SSH MCP can still connect to included aliases, unlisted hostnames, and addresses when their host keys are trusted and authentication succeeds.
 
 ## Authentication notes
 

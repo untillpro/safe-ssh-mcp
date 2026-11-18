@@ -3,7 +3,9 @@
 # Policy files are trusted operator configuration and must not be populated from remote or untrusted sources.
 
 id:
-  mode: permissive
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-u, -g, -G, -n, -r, -z, --user, --group, --groups, --name, --real, --zero]
 
 getent:
   mode: whitelist
@@ -15,42 +17,27 @@ getent:
       max_rest: 10
 
 uptime:
-  mode: permissive
+  mode: whitelist
+  valueless_flags: [-p, -s, --pretty, --since]
+  positional_variants:
+    - []
 
 # -c is intentionally excluded because it clears the kernel ring buffer.
 dmesg:
   mode: whitelist
+  valueless_flags: [-T, -H, -t, -w, -x]
   flags:
     - flag: -l
       value_pattern: '[A-Za-z,]+'
-    - flag: -T
-      value_pattern: null
-    - flag: -H
-      value_pattern: null
-    - flag: -t
-      value_pattern: null
-    - flag: -w
-      value_pattern: null
-    - flag: -x
-      value_pattern: null
 
 last:
   mode: whitelist
+  valueless_flags: [-x, -a, -d, -i, -w]
   flags:
     - flag: -n
       value_pattern: '[1-9][0-9]{0,3}'
     - flag: -f
       value_pattern: '(?!-).{1,4096}'
-    - flag: -x
-      value_pattern: null
-    - flag: -a
-      value_pattern: null
-    - flag: -d
-      value_pattern: null
-    - flag: -i
-      value_pattern: null
-    - flag: -w
-      value_pattern: null
 
 # Only read-only systemctl operations are expressible. Modifying verbs such as start, stop, and restart do not match.
 systemctl:

@@ -271,22 +271,25 @@ For example, add a block-device inspection command with explicit flags and no po
 ```yaml
 lsblk:
   mode: whitelist
+  valueless_flags: [--json]
   flags:
-    - flag: --json
-      value_pattern: null
     - flag: --output
       value_pattern: '(?:NAME|SIZE|TYPE|MOUNTPOINT)(?:,(?:NAME|SIZE|TYPE|MOUNTPOINT)){0,3}'
   positional_variants:
     - []
 ```
 
-Every generic command and subcommand must explicitly declare `mode: permissive`, `mode: blacklist`, or `mode: whitelist`. There is no default, and a child does not inherit its parent's mode. Missing or invalid modes stop startup. Handler policies such as `handler: curl` use their handler's validation and must not declare `mode`. Older custom generic policies that omitted `mode` previously selected permissive behavior; add `mode: permissive` to preserve that behavior, or choose another mode and declare its rules explicitly. The bundled policies already declare their modes.
+Every generic command and subcommand must explicitly declare `mode: whitelist` or `mode: blacklist`. There is no default, and a child does not inherit its parent's mode. Missing or invalid modes stop startup. Handler policies such as `handler: curl` use their handler's validation and must not declare `mode`.
 
-Every flag object must contain `value_pattern`. A string requires one value and validates it with a full-string Python regular-expression match, case-sensitive unless the pattern uses inline flags; `null` means the flag accepts no value. Generic policies accept equivalent forms `--flag value` and `--flag=value`, and `-n value` and `-nvalue`. Set `allows_flag_bundling: true` only when the command supports combined short flags; the default is `false`. The curl handler has its own grammar, reported in `handler_rules` by `safe_ssh_get_command_rules`.
+Use whitelist mode. Every bundled policy does, and lists only the most useful read-only flags of its command; see [ADR 008](adr/008-whitelist-only-shipped-policies.md). When an agent needs a flag that is rejected, add it to the command's `flags` list and restart the server. Declare a value pattern only for a flag whose command requires a value, never list a flag that writes files, runs programs, or changes system state, and restrict operands with `positional_variants` when an operand can do more than name data to read.
+
+Blacklist mode accepts every flag it does not list, and with no `flags` it accepts everything. It remains available for custom configurations but is discouraged, because a missed flag or spelling is allowed silently. `mode: permissive` was removed and now stops startup: list the allowed flags with `mode: whitelist`, or use `mode: blacklist` without flags to keep the previous behaviour.
+
+List flags that take no value in `valueless_flags`, an array of flag names, and flags that take a value in `flags`. Every `flags` object must contain `value_pattern`. A string requires one value and validates it with a full-string Python regular-expression match, case-sensitive unless the pattern uses inline flags; `null` means the flag accepts no value, which is the longer spelling of a `valueless_flags` entry. A flag must not appear in both lists. Quote names that YAML would read as numbers, such as `'-1'`. Generic policies accept equivalent forms `--flag value` and `--flag=value`, and `-n value` and `-nvalue`. Set `allows_flag_bundling: true` only when the command supports combined short flags; the default is `false`. The curl handler has its own grammar, reported in `handler_rules` by `safe_ssh_get_command_rules`.
 
 In blacklist mode, a long option that is a prefix of a blocked long option is rejected too: blocking `--output` also rejects `--outp` and `--o`, because many commands accept abbreviated long options. Aliases spelled differently, such as a short form or a single-dash variant, are not inferred; list every spelling the command accepts, or use whitelist mode.
 
-In whitelist mode, `positional_variants` defines complete allowed positional sequences. Array variants have exact arity. Bounded-rest variants use `args`, `rest_pattern`, `min_rest`, and `max_rest`. Set `positional_variants: [[]]` to reject positional operands. Flat whitelist policies without this field allow unrestricted positional arguments; routing nodes instead default to no root positionals. The field is rejected in blacklist and permissive modes because the values of undeclared flags cannot be distinguished reliably from positional arguments.
+In whitelist mode, `positional_variants` defines complete allowed positional sequences. Array variants have exact arity. Bounded-rest variants use `args`, `rest_pattern`, `min_rest`, and `max_rest`. Set `positional_variants: [[]]` to reject positional operands. Flat whitelist policies without this field allow unrestricted positional arguments; routing nodes instead default to no root positionals. The field is rejected in blacklist mode because the values of undeclared flags cannot be distinguished reliably from positional arguments.
 
 ### Subcommand and nested-command rules
 

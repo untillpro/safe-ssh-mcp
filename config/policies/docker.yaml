@@ -3,9 +3,7 @@
 
 docker:
   mode: whitelist
-  flags:
-    - { flag: -h, value_pattern: null }
-    - { flag: --help, value_pattern: null }
+  valueless_flags: [-h, --help]
   positional_variants:
     - []
 
@@ -15,12 +13,8 @@ docker:
   subcommands:
     ps:
       mode: whitelist
+      valueless_flags: [-a, --all, -q, --quiet, --no-trunc]
       flags:
-        - { flag: -a, value_pattern: null }
-        - { flag: --all, value_pattern: null }
-        - { flag: -q, value_pattern: null }
-        - { flag: --quiet, value_pattern: null }
-        - { flag: --no-trunc, value_pattern: null }
         - { flag: -f, value_pattern: ".{1,1024}" }
         - { flag: --filter, value_pattern: ".{1,1024}" }
         - { flag: --format, value_pattern: ".{1,1024}" }
@@ -58,11 +52,11 @@ docker:
 
     logs:
       mode: whitelist
+      valueless_flags: [--timestamps]
       flags:
         - { flag: --tail, value_pattern: "(?:0|[1-9][0-9]{0,3})" }
         - { flag: --since, value_pattern: ".{1,128}" }
         - { flag: --until, value_pattern: ".{1,128}" }
-        - { flag: --timestamps, value_pattern: null }
       require_flags:
         - --tail
       positional_variants:
@@ -70,10 +64,8 @@ docker:
 
     stats:
       mode: whitelist
+      valueless_flags: [--no-stream, --all, --no-trunc]
       flags:
-        - { flag: --no-stream, value_pattern: null }
-        - { flag: --all, value_pattern: null }
-        - { flag: --no-trunc, value_pattern: null }
         - { flag: --format, value_pattern: ".{1,1024}" }
       require_flags:
         - --no-stream
@@ -99,20 +91,19 @@ docker:
       subcommands:
         ls:
           mode: whitelist
+          valueless_flags: [-q, --quiet]
           flags:
             - { flag: -f, value_pattern: ".{1,1024}" }
             - { flag: --filter, value_pattern: ".{1,1024}" }
             - { flag: --format, value_pattern: ".{1,1024}" }
-            - { flag: -q, value_pattern: null }
-            - { flag: --quiet, value_pattern: null }
           positional_variants:
             - []
         inspect:
           mode: whitelist
+          valueless_flags: [--pretty]
           flags:
             - { flag: -f, value_pattern: ".{1,1024}" }
             - { flag: --format, value_pattern: ".{1,1024}" }
-            - { flag: --pretty, value_pattern: null }
           positional_variants:
             - args: []
               rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
@@ -120,14 +111,11 @@ docker:
               max_rest: 10
         ps:
           mode: whitelist
+          valueless_flags: [--no-resolve, --no-trunc, -q, --quiet]
           flags:
             - { flag: -f, value_pattern: ".{1,1024}" }
             - { flag: --filter, value_pattern: ".{1,1024}" }
             - { flag: --format, value_pattern: ".{1,1024}" }
-            - { flag: --no-resolve, value_pattern: null }
-            - { flag: --no-trunc, value_pattern: null }
-            - { flag: -q, value_pattern: null }
-            - { flag: --quiet, value_pattern: null }
           positional_variants:
             - args: []
               rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
@@ -139,20 +127,19 @@ docker:
       subcommands:
         ls:
           mode: whitelist
+          valueless_flags: [-q, --quiet]
           flags:
             - { flag: -f, value_pattern: ".{1,1024}" }
             - { flag: --filter, value_pattern: ".{1,1024}" }
             - { flag: --format, value_pattern: ".{1,1024}" }
-            - { flag: -q, value_pattern: null }
-            - { flag: --quiet, value_pattern: null }
           positional_variants:
             - []
         inspect:
           mode: whitelist
+          valueless_flags: [--pretty]
           flags:
             - { flag: -f, value_pattern: ".{1,1024}" }
             - { flag: --format, value_pattern: ".{1,1024}" }
-            - { flag: --pretty, value_pattern: null }
           positional_variants:
             - args: []
               rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
@@ -160,14 +147,11 @@ docker:
               max_rest: 10
         ps:
           mode: whitelist
+          valueless_flags: [--no-resolve, --no-trunc, -q, --quiet]
           flags:
             - { flag: -f, value_pattern: ".{1,1024}" }
             - { flag: --filter, value_pattern: ".{1,1024}" }
             - { flag: --format, value_pattern: ".{1,1024}" }
-            - { flag: --no-resolve, value_pattern: null }
-            - { flag: --no-trunc, value_pattern: null }
-            - { flag: -q, value_pattern: null }
-            - { flag: --quiet, value_pattern: null }
           positional_variants:
             - args: []
               rest_pattern: "[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"
@@ -185,24 +169,20 @@ docker:
             - []
         services:
           mode: whitelist
+          valueless_flags: [-q, --quiet]
           flags:
             - { flag: -f, value_pattern: ".{1,1024}" }
             - { flag: --filter, value_pattern: ".{1,1024}" }
             - { flag: --format, value_pattern: ".{1,1024}" }
-            - { flag: -q, value_pattern: null }
-            - { flag: --quiet, value_pattern: null }
           positional_variants:
             - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"]
         ps:
           mode: whitelist
+          valueless_flags: [--no-resolve, --no-trunc, -q, --quiet]
           flags:
             - { flag: -f, value_pattern: ".{1,1024}" }
             - { flag: --filter, value_pattern: ".{1,1024}" }
             - { flag: --format, value_pattern: ".{1,1024}" }
-            - { flag: --no-resolve, value_pattern: null }
-            - { flag: --no-trunc, value_pattern: null }
-            - { flag: -q, value_pattern: null }
-            - { flag: --quiet, value_pattern: null }
           positional_variants:
             - ["[A-Za-z0-9][A-Za-z0-9_.-]{0,255}"]
 
@@ -211,9 +191,8 @@ docker:
       subcommands:
         df:
           mode: whitelist
+          valueless_flags: [-v, --verbose]
           flags:
-            - { flag: -v, value_pattern: null }
-            - { flag: --verbose, value_pattern: null }
             - { flag: --format, value_pattern: ".{1,1024}" }
           positional_variants:
             - []

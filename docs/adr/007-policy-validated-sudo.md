@@ -40,9 +40,7 @@ The policy shape is:
 ```yaml
 sudo:
   mode: whitelist
-  flags:
-    - {flag: -n, value_pattern: null}
-    - {flag: -l, value_pattern: null}
+  valueless_flags: [-n, -l]
   require_flags:
     - -n
     - -l

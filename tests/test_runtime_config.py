@@ -61,7 +61,7 @@ class RuntimeDirectoryTests(unittest.TestCase):
     def write_policy(directory: Path) -> None:
         directory.mkdir(parents=True)
         (directory / "only.yaml").write_text(
-            "probe:\n  mode: permissive\n", encoding="utf-8"
+            "probe:\n  mode: blacklist\n", encoding="utf-8"
         )
 
     @classmethod

@@ -349,8 +349,8 @@ class CurlHandlerTests(unittest.TestCase):
 
 
 LOOPBACK_USAGE_POLICY: dict[str, CommandPolicy] = {
-    "cat": {"mode": "permissive"},
-    "jq": {"mode": "permissive"},
+    "cat": {"mode": "blacklist"},
+    "jq": {"mode": "blacklist"},
     "curl": {
         "handler": "curl",
         "require_first": "--disable",

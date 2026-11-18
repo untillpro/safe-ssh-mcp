@@ -42,9 +42,9 @@ The server passes the requested hostname, address, or alias to AsyncSSH without 
 
 AsyncSSH 2.24.1 requires forward slashes in absolute Windows `Include` paths. The server does not normalize these paths because doing so would reintroduce a second configuration parser. Operators using Windows absolute paths must write them as `C:/...` rather than `C:\...`.
 
-`ssh_list_hosts` is a best-effort discovery aid, not an authorization boundary. Its small local reader lists concrete `Host` tokens found directly in the main `~/.ssh/config`; it does not follow `Include`, evaluate `Match`, or reproduce any connection setting. Consequently, AsyncSSH may successfully resolve aliases which are absent from the list, and callers may request an unlisted hostname or address. A host argument is rejected locally only when it is empty, longer than 255 characters, or contains whitespace or control characters.
+`safe_ssh_list_hosts` is a best-effort discovery aid, not an authorization boundary. Its small local reader lists concrete `Host` tokens found directly in the main `~/.ssh/config`; it does not follow `Include`, evaluate `Match`, or reproduce any connection setting. Consequently, AsyncSSH may successfully resolve aliases which are absent from the list, and callers may request an unlisted hostname or address. A host argument is rejected locally only when it is empty, longer than 255 characters, or contains whitespace or control characters.
 
-Connection settings are read by AsyncSSH when a new connection is created. An already-open connection retains the settings from its handshake until it closes or the MCP server restarts. Host listing reads the main config each time `ssh_list_hosts` is called.
+Connection settings are read by AsyncSSH when a new connection is created. An already-open connection retains the settings from its handshake until it closes or the MCP server restarts. Host listing reads the main config each time `safe_ssh_list_hosts` is called.
 
 Every new connection receives `~/.ssh/known_hosts` explicitly. AsyncSSH supports plain and hashed host patterns and `@cert-authority` and `@revoked` markers. The path is read again for each replacement connection, so an operator-approved key takes effect without restarting the MCP server after the old connection is closed. The file is never written. For an unknown or changed key, the tool reports safe key type and SHA-256 fingerprint data when available and directs the operator to run `ssh <alias>` in a terminal. Raw host-key errors are not returned.
 
@@ -64,7 +64,7 @@ One deadline covers process creation, concurrent reads, and process completion. 
 
 ## Command validation
 
-`ssh_execute` and `ssh_validate_command` accept a `pipeline` array. Each stage contains exactly a `command` string and an `arguments` array of strings. A single command is represented by a one-stage pipeline.
+`safe_ssh_execute` and `safe_ssh_validate_command` accept a `pipeline` array. Each stage contains exactly a `command` string and an `arguments` array of strings. A single command is represented by a one-stage pipeline.
 
 The server checks the pipeline shape and limits, then validates every stage independently against `COMMAND_POLICIES`. It renders each stage with `shlex.join` and inserts ` | ` between stages. The agent cannot provide shell operators: values such as `$HOME`, `$(whoami)`, `>`, `&&`, `*`, and `error|warning` are quoted as literal arguments. Redirections, command lists, substitutions, expansions, glob syntax, and background execution have no structured representation.
 
@@ -85,8 +85,8 @@ flowchart TD
     More -->|Yes| Stage
     More -->|No| Render["Quote stages and insert pipes"]
     Render --> Tool{"Requested tool"}
-    Tool -->|ssh_validate_command| Valid["Return valid"]
-    Tool -->|ssh_execute| Execute["Execute through remote shell"]
+    Tool -->|safe_ssh_validate_command| Valid["Return valid"]
+    Tool -->|safe_ssh_execute| Execute["Execute through remote shell"]
 ```
 
 The rendered pipeline is sent through the SSH account's configured remote shell, as raw commands were before this change. The returned exit status is therefore the final pipeline stage's status. A fixed Bash wrapper was rejected because it would introduce a new remote prerequisite solely for `pipefail`; see [ADR 004](adr/004-structured-command-pipeline.md).
@@ -102,12 +102,11 @@ A pipeline is rejected when:
 
 Each generic command and subcommand policy must explicitly declare a mode. There is no default and no inheritance from a parent policy; a missing or invalid mode stops startup. Handler policies declare `handler` instead of `mode`:
 
-- `permissive` allows every flag and positional argument. It is only suitable for commands whose complete argument grammar is read-only, such as `ls`, `cat`, `grep`, and `ps`.
-- `blacklist` allows every flag except the structured `flags` entries, which identify blocked flags and whether they have attached or inline values. A long option that is a proper prefix of a blocked long option, such as `--outp` for `--output`, is rejected as well, because getopt-style parsers accept unambiguous abbreviations. Differently spelled aliases of a blocked flag are not inferred and must be listed. It is suitable only when unrestricted positional arguments cannot select modifying behavior.
-- `whitelist` allows only the structured `flags` entries. An optional `positional_variants` field can define the complete allowed positional grammar.
+- `whitelist` allows only the structured `flags` entries. An optional `positional_variants` field can define the complete allowed positional grammar. Every shipped policy uses this mode; see [ADR 008](adr/008-whitelist-only-shipped-policies.md).
+- `blacklist` allows every flag except the structured `flags` entries, which identify blocked flags and whether they have attached or inline values; with no entries it allows every flag. A long option that is a proper prefix of a blocked long option, such as `--outp` for `--output`, is rejected as well, because getopt-style parsers accept unambiguous abbreviations. Differently spelled aliases of a blocked flag are not inferred and must be listed. The mode allows whatever it does not name, so it is kept only for custom configurations and is discouraged.
 - A handler policy delegates command-specific grammar to a deny-by-default Python validator. `curl` uses this mode because destination, credential, and data-input validation cannot be expressed safely through generic flag patterns alone. Docker uses generic `subcommands` and `nested_commands` rules; it has no specialized handler.
 
-Every `flags` item contains `flag` and the required `value_pattern` field. A regular-expression string means the flag requires exactly one value; explicit `null` means the flag accepts no value. Patterns use case-sensitive full-string matching. The validator accepts separate and inline long values (`--output file` and `--output=file`) and separate and attached short values (`-n 100` and `-n100`). An exact declared flag takes precedence over attached-value parsing. Short bundles such as `-tzv` are accepted only when `allows_flag_bundling: true`, after exact-flag and attached-value interpretations fail. An exact `--` token ends option parsing.
+Every `flags` item contains `flag` and the required `value_pattern` field. A regular-expression string means the flag requires exactly one value; explicit `null` means the flag accepts no value. `valueless_flags` is an array of flag names and is shorthand for `flags` items with a `null` pattern: the loader merges both lists into one, with the valueless names first, so validation sees a single flag list. A name that is not a string, is repeated, or appears in both lists stops startup. Discovery reports the merged list in the same compact shape whichever spelling the policy used: `allowed_valueless_flags` or `blocked_valueless_flags` holds the names of flags without a value, and `allowed_flags` or `blocked_flags` holds only the flags that require a value, each with its `value_pattern`. Patterns use case-sensitive full-string matching. The validator accepts separate and inline long values (`--output file` and `--output=file`) and separate and attached short values (`-n 100` and `-n100`). An exact declared flag takes precedence over attached-value parsing. Short bundles such as `-tzv` are accepted only when `allows_flag_bundling: true`, after exact-flag and attached-value interpretations fail. An exact `--` token ends option parsing.
 
 `require_flags` lists normalized flags that must be present. For example, `ping` requires `-c` and its value pattern limits the count to 1 through 100.
 
@@ -115,7 +114,7 @@ In flat whitelist policies, `positional_variants` is authoritative when present 
 
 Policy files are trusted operator configuration and must not be populated from remote or untrusted sources. Files load in deterministic filename order, and every command must be defined exactly once. At startup the loader rejects a missing or empty policy directory, malformed YAML, duplicate mapping keys, command names repeated across files, missing or invalid generic modes, unknown fields, legacy string-only flags, missing `value_pattern` fields, invalid variant shapes, invalid regular expressions, patterns longer than 1,024 characters, `positional_variants`, `subcommands`, or `nested_commands` outside whitelist mode, invalid subcommand names, empty routing collections, duplicate nested prefixes, and unsupported handler selectors including `handler: docker`. It compiles each regular expression once. Before matching, it rejects flag values and positional tokens longer than 4,096 characters.
 
-Earlier versions defaulted an omitted generic mode to permissive. Custom policies relying on that behavior must add `mode: permissive` explicitly, including at each generic subcommand. Bundled and internal policies already declare their modes; their permissions are unchanged.
+Earlier versions had a third mode, `permissive`, which allowed every flag and operand, and before that defaulted an omitted mode to it. The mode is removed: a policy declaring `mode: permissive` stops startup with an error naming the replacements. List the allowed flags with `mode: whitelist`, or use `mode: blacklist` without flags to keep allowing every flag.
 
 ### Subcommands and nested commands
 
@@ -132,7 +131,7 @@ Dispatch order at every node is:
 
 Nested validation failures are final and never fall back to a subcommand or positional rule. A command name cannot re-enter an active command policy, even through another wrapper, and at most eight nested command levels are allowed in addition to the initial command. The loader accepts at most 128 subcommands or nested prefixes per node, at most 128 patterns per prefix, and at most eight subcommand levels; existing pattern, token, argument, pipeline, timeout, and output limits remain in force. The runtime rejects overlapping prefix matches without trying to prove regex overlap during startup. Cyclic YAML policy objects fail the loader's depth limit or YAML construction checks.
 
-Discovery recursively reports the effective `subcommands`, `nested_commands`, root and leaf rules, and policy depth limits without compiled regex objects or Docker-specific metadata. `ssh_describe_validation_rules` includes live routing trees and container fallback guidance; execution and dry runs use the same validator.
+Discovery recursively reports the effective `subcommands`, `nested_commands`, root and leaf rules, and policy depth limits without compiled regex objects or Docker-specific metadata. `safe_ssh_get_command_rules` returns the routing tree of each selected command, and `safe_ssh_describe_validation_rules` explains the shared matching semantics; execution and dry runs use the same validator.
 
 ### Policy-validated Docker execution
 
@@ -179,16 +178,25 @@ Directory scanning, metadata, and deletion failures are warnings and do not stop
 
 `awk` and `sed` are not allowed at all: they can run commands and write files from inside their scripts, which flag checks cannot see. The reasoning is in [ADR 002](adr/002-mvp-command-whitelist.md).
 
-The unrestricted positional grammar of every shipped permissive policy was reviewed:
+### Whitelist-only shipped policies
 
-- File and path readers (`ls`, `cat`, `pwd`, `stat`, `du`, `df`, `basename`, `dirname`) use positionals only to select data to read or format. `file` is instead a blacklist policy that blocks `-C`, `--compile`, and every abbreviation of that long option, because compiling writes a magic file.
-- Text and data processors (`grep`, `head`, `tail`, `wc`, `cut`, `tr`, `diff`, `comm`, `jq`) produce output on stdout and have no argument-selected modifying subcommand. `uniq` is instead a whitelist policy that permits its read-only flags and at most one input operand, because a second operand names an output file.
-- Identity and system readers (`whoami`, `uname`, `which`, `id`, `uptime`) report information without an argument-selected modifying subcommand. `hostname` is instead a whitelist policy that permits only the no-argument read form.
-- Process, archive, and network readers (`ps`, `top`, `free`, `zipinfo`, `netstat`, `iostat`) expose inspection and formatting arguments but no argument-selected modifying subcommand. `ss` is instead a blacklist policy that blocks its socket-terminating `-K` and `--kill` options.
+Every shipped policy is a whitelist that lists the most useful read-only flags of its command, not the complete grammar. A missing flag is rejected and can be added on demand; flags that write files, run programs, change system state, or keep a command running until the timeout are never listed. A flag is declared with a value only when the command requires one, so the validator and the command agree on which tokens are operands. The reasoning is in [ADR 008](adr/008-whitelist-only-shipped-policies.md), and a test fails when a shipped policy uses another mode.
 
-### Residual policy limitation
+Whitelist policies without `positional_variants` accept any operands. The shipped policies rely on that only where operands merely select data to read, and restrict operands where they can do more:
 
-- `positional_variants` is deliberately unavailable in blacklist and permissive modes. Those modes accept undeclared flags, so the validator cannot know whether a following token is that flag's value or a positional argument. Use whitelist mode for commands such as `systemctl` and `docker`, where a positional subcommand selects behavior.
+- `uniq` accepts at most one input operand, because a second operand names an output file.
+- `date` accepts only a `+FORMAT` operand, because a bare `MMDDhhmm` operand sets the system clock.
+- `xmllint` rejects URL operands and URL schema locations, which it would fetch.
+- `top` requires batch mode with an iteration count and accepts no operands.
+- `tar` requires `-t` and accepts no operands, because tar reads a first operand without a dash as an option cluster, so `tar xf FILE` extracts. The archive is named with `-f` or piped in, and a name containing a colon is refused because tar would open it on a remote host.
+- `unzip` requires `-l`, because it extracts when no listing flag is given.
+- `hostname`, `whoami`, `pwd`, `uname`, `uptime`, `free`, and `netstat` accept no operands.
+
+### Residual policy limitations
+
+- `positional_variants` is deliberately unavailable in blacklist mode. That mode accepts undeclared flags, so the validator cannot know whether a following token is that flag's value or a positional argument.
+- A flag takes either no value or exactly one. Flags with an optional value are listed without it, and flags that take two values, such as `jq --arg NAME VALUE`, are not listed.
+- Flag names are literal, so numeric shorthands such as `head -20` are rejected in favour of `head -n 20`.
 
 ## Limits
 
@@ -201,7 +209,7 @@ The unrestricted positional grammar of every shipped permissive policy was revie
 - Command timeout: 10 seconds (`COMMAND_TIMEOUT_SECONDS`).
 - stdout and stderr: 50 KB retained independently (`MAX_RESPONSE_BYTES`). Exceeding either limit closes the command channel and returns a truncation marker with the exit status unavailable.
 
-The server exposes no download or other local file-write tool. Agents inspect remote files through validated `ssh_execute` commands such as `cat`, `head`, `tail`, or `sed`, subject to the command timeout and response limits above. A future transfer tool requires a separate design with server-chosen local destinations and streaming limits.
+The server exposes no download or other local file-write tool. Agents inspect remote files through validated `safe_ssh_execute` commands such as `cat`, `head`, `tail`, or `grep`, subject to the command timeout and response limits above. A future transfer tool requires a separate design with server-chosen local destinations and streaming limits.
 
 ## Layout
 

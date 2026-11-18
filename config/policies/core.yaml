@@ -4,213 +4,447 @@
 # invariants and specialized value-aware handlers remain enforced by Python.
 # Policy files are trusted operator configuration and must not be populated from
 # remote or untrusted sources.
+#
+# Every shipped policy is a whitelist (see ADR 008). Only the listed flags are
+# accepted, so each list holds the most useful read-only flags rather than the
+# command's complete grammar; a missing flag is a rejection, not a gap, and can
+# be added here on demand. Flags without a value go in valueless_flags; flags
+# entries carry the pattern their value must match. Declare a value only for a
+# flag whose command requires one: a flag with an optional value is valueless.
+# Policies without positional_variants accept any operands, which is safe only
+# while no operand can select modifying behaviour.
 
 # File operations
 ls:
-  mode: permissive
-cat:
-  mode: permissive
-pwd:
-  mode: permissive
-# `-C`/`--compile` writes a compiled magic file. Abbreviations of the long option
-# are rejected by the validator.
-file:
-  mode: blacklist
+  mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-l, -a, -A, -d, -h, -R, -t, -r, -S, '-1', -n, -i, -s, -F, -p, -L, -H, -Z, -c,
+    -u, -X, -v, -g, -o,
+    --all, --almost-all, --directory, --human-readable, --si, --recursive, --reverse, --inode,
+    --size, --numeric-uid-gid, --no-group, --dereference, --full-time, --group-directories-first]
   flags:
-    - { flag: -C, value_pattern: null }
-    - { flag: --compile, value_pattern: null }
+    - { flag: --time-style, value_pattern: '\+?[A-Za-z0-9%:._/ -]{1,64}' }
+    - { flag: --sort, value_pattern: '(?:none|size|time|version|extension|width)' }
+    - { flag: --time, value_pattern: '(?:atime|access|use|ctime|status|birth|creation|mtime|modification)' }
+cat:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-n, -b, -A, -e, -E, -s, -t, -T, -v,
+    --number, --number-nonblank, --show-all, --show-ends, --show-tabs, --show-nonprinting,
+    --squeeze-blank]
+pwd:
+  mode: whitelist
+  valueless_flags: [-L, -P]
+  positional_variants:
+    - []
+# `-C`/`--compile` writes a compiled magic file and `-p`/`--preserve-date` resets
+# access times, so neither is listed.
+file:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-b, -i, -L, -h, -z, -k, -N, -n, -r, '-0', -E,
+    --brief, --mime, --mime-type, --mime-encoding, --extension, --dereference, --no-dereference,
+    --uncompress, --keep-going, --no-pad, --raw, --print0, --version]
+  flags:
+    - { flag: -m, value_pattern: '.+' }
+    - { flag: -F, value_pattern: '.{1,8}' }
+    - { flag: -e, value_pattern: '[a-z]{1,16}' }
+    - { flag: -f, value_pattern: '.+' }
+    - { flag: --magic-file, value_pattern: '.+' }
+    - { flag: --separator, value_pattern: '.{1,8}' }
+    - { flag: --exclude, value_pattern: '[a-z]{1,16}' }
+    - { flag: --files-from, value_pattern: '.+' }
 stat:
-  mode: permissive
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-f, -L, -t, --file-system, --dereference, --terse]
+  flags:
+    - { flag: -c, value_pattern: '.{1,512}' }
+    - { flag: --format, value_pattern: '.{1,512}' }
+    - { flag: --printf, value_pattern: '.{1,512}' }
 
 # Text processing
 grep:
-  mode: permissive
-head:
-  mode: permissive
-tail:
-  mode: permissive
-wc:
-  mode: permissive
-sort:
-  mode: blacklist
+  mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-E, -F, -G, -P, -i, -v, -w, -x, -c, -l, -L, -n, -o, -q, -s, -r, -R, -H, -h, -a,
+    -I, -z, -b,
+    --extended-regexp, --fixed-strings, --perl-regexp, --ignore-case, --invert-match, --word-regexp,
+    --line-regexp, --count, --files-with-matches, --files-without-match, --line-number,
+    --only-matching, --quiet, --no-messages, --recursive, --dereference-recursive, --with-filename,
+    --no-filename, --text, --null-data]
   flags:
-    - flag: -o
-      value_pattern: '.+'
-    - flag: --output
-      value_pattern: '.+'
-    - flag: --compress-program
-      value_pattern: '.+'
+    - { flag: -e, value_pattern: '.+' }
+    - { flag: -f, value_pattern: '.+' }
+    - { flag: -m, value_pattern: '[0-9]{1,6}' }
+    - { flag: -A, value_pattern: '[0-9]{1,6}' }
+    - { flag: -B, value_pattern: '[0-9]{1,6}' }
+    - { flag: -C, value_pattern: '[0-9]{1,6}' }
+    - { flag: --regexp, value_pattern: '.+' }
+    - { flag: --file, value_pattern: '.+' }
+    - { flag: --max-count, value_pattern: '[0-9]{1,6}' }
+    - { flag: --after-context, value_pattern: '[0-9]{1,6}' }
+    - { flag: --before-context, value_pattern: '[0-9]{1,6}' }
+    - { flag: --context, value_pattern: '[0-9]{1,6}' }
+    - { flag: --include, value_pattern: '.+' }
+    - { flag: --exclude, value_pattern: '.+' }
+    - { flag: --exclude-dir, value_pattern: '.+' }
+head:
+  mode: whitelist
+  valueless_flags: [-q, -v, -z, --quiet, --verbose, --zero-terminated]
+  flags:
+    - { flag: -n, value_pattern: '-?[0-9]{1,9}' }
+    - { flag: -c, value_pattern: '-?[0-9]{1,9}[A-Za-z]{0,2}' }
+    - { flag: --lines, value_pattern: '-?[0-9]{1,9}' }
+    - { flag: --bytes, value_pattern: '-?[0-9]{1,9}[A-Za-z]{0,2}' }
+# Follow mode is not listed because it runs until the command timeout.
+tail:
+  mode: whitelist
+  valueless_flags: [-q, -v, -z, --quiet, --verbose, --zero-terminated]
+  flags:
+    - { flag: -n, value_pattern: '[+-]?[0-9]{1,9}' }
+    - { flag: -c, value_pattern: '[+-]?[0-9]{1,9}[A-Za-z]{0,2}' }
+    - { flag: --lines, value_pattern: '[+-]?[0-9]{1,9}' }
+    - { flag: --bytes, value_pattern: '[+-]?[0-9]{1,9}[A-Za-z]{0,2}' }
+wc:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-l, -w, -c, -m, -L, --lines, --words, --bytes, --chars, --max-line-length]
+# `-o`/`--output` writes a file, `--compress-program` runs a program, and `-T`
+# chooses where temporary files are written, so none of them is listed.
+sort:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-r, -n, -h, -u, -f, -b, -d, -g, -i, -M, -V, -R, -s, -c, -C, -z, -m,
+    --reverse, --numeric-sort, --human-numeric-sort, --unique, --ignore-case,
+    --ignore-leading-blanks, --dictionary-order, --general-numeric-sort, --month-sort,
+    --version-sort, --stable, --check, --zero-terminated, --merge]
+  flags:
+    - { flag: -k, value_pattern: '[0-9]{1,4}(?:\.[0-9]{1,4})?[A-Za-z]{0,8}(?:,[0-9]{1,4}(?:\.[0-9]{1,4})?[A-Za-z]{0,8})?' }
+    - { flag: -t, value_pattern: '.{1,8}' }
+    - { flag: --key, value_pattern: '[0-9]{1,4}(?:\.[0-9]{1,4})?[A-Za-z]{0,8}(?:,[0-9]{1,4}(?:\.[0-9]{1,4})?[A-Za-z]{0,8})?' }
+    - { flag: --field-separator, value_pattern: '.{1,8}' }
 # A second operand names an output file, so at most the input operand is allowed.
 # `--all-repeated` and `--group` are valueless here: a separated method would be
 # read by uniq as the input operand and shift the next token to the output file.
 uniq:
   mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-c,
+    --count, -d,
+    --repeated, -D,
+    --all-repeated, --group, -i,
+    --ignore-case, -u,
+    --unique, -z,
+    --zero-terminated, --help, --version]
   flags:
-    - { flag: -c, value_pattern: null }
-    - { flag: --count, value_pattern: null }
-    - { flag: -d, value_pattern: null }
-    - { flag: --repeated, value_pattern: null }
-    - { flag: -D, value_pattern: null }
-    - { flag: --all-repeated, value_pattern: null }
-    - { flag: --group, value_pattern: null }
     - { flag: -f, value_pattern: '[0-9]{1,9}' }
     - { flag: --skip-fields, value_pattern: '[0-9]{1,9}' }
-    - { flag: -i, value_pattern: null }
-    - { flag: --ignore-case, value_pattern: null }
     - { flag: -s, value_pattern: '[0-9]{1,9}' }
     - { flag: --skip-chars, value_pattern: '[0-9]{1,9}' }
-    - { flag: -u, value_pattern: null }
-    - { flag: --unique, value_pattern: null }
     - { flag: -w, value_pattern: '[0-9]{1,9}' }
     - { flag: --check-chars, value_pattern: '[0-9]{1,9}' }
-    - { flag: -z, value_pattern: null }
-    - { flag: --zero-terminated, value_pattern: null }
-    - { flag: --help, value_pattern: null }
-    - { flag: --version, value_pattern: null }
   positional_variants:
     - []
     - ['.+']
 cut:
-  mode: permissive
-tr:
-  mode: permissive
-diff:
-  mode: permissive
-comm:
-  mode: permissive
-
-# File search -- block flags that execute commands, delete files, or write output.
-find:
-  mode: blacklist
+  mode: whitelist
+  valueless_flags: [-s, -z, --only-delimited, --zero-terminated, --complement]
   flags:
-    - flag: -exec
-      value_pattern: null
-    - flag: -execdir
-      value_pattern: null
-    - flag: -ok
-      value_pattern: null
-    - flag: -okdir
-      value_pattern: null
-    - flag: -delete
-      value_pattern: null
-    - flag: -fprint
-      value_pattern: '.+'
-    - flag: -fprint0
-      value_pattern: '.+'
-    - flag: -fprintf
-      value_pattern: '.+'
-    - flag: -fls
-      value_pattern: '.+'
+    - { flag: -d, value_pattern: '.{1,8}' }
+    - { flag: -f, value_pattern: '[0-9,-]{1,128}' }
+    - { flag: -c, value_pattern: '[0-9,-]{1,128}' }
+    - { flag: -b, value_pattern: '[0-9,-]{1,128}' }
+    - { flag: --delimiter, value_pattern: '.{1,8}' }
+    - { flag: --fields, value_pattern: '[0-9,-]{1,128}' }
+    - { flag: --characters, value_pattern: '[0-9,-]{1,128}' }
+    - { flag: --bytes, value_pattern: '[0-9,-]{1,128}' }
+    - { flag: --output-delimiter, value_pattern: '.{0,32}' }
+tr:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-d, -s, -c, -C, -t, --delete, --squeeze-repeats, --complement, --truncate-set1]
+diff:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-u, -c, -q, -r, -s, -i, -w, -b, -B, -y, -N, -a,
+    --unified, --brief, --recursive, --report-identical-files, --ignore-case, --ignore-all-space,
+    --ignore-space-change, --ignore-blank-lines, --side-by-side, --new-file, --text]
+  flags:
+    - { flag: -U, value_pattern: '[0-9]{1,4}' }
+    - { flag: -C, value_pattern: '[0-9]{1,4}' }
+    - { flag: -W, value_pattern: '[0-9]{1,4}' }
+    - { flag: -x, value_pattern: '.+' }
+    - { flag: --width, value_pattern: '[0-9]{1,4}' }
+    - { flag: --exclude, value_pattern: '.+' }
+comm:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: ['-1', '-2', '-3', -z,
+    --check-order, --nocheck-order, --total, --zero-terminated]
+  flags:
+    - { flag: --output-delimiter, value_pattern: '.{0,32}' }
+
+# File search -- only tests and printing actions are listed. Actions that run
+# commands (-exec, -execdir, -ok, -okdir), delete files (-delete), or write files
+# (-fprint, -fprint0, -fprintf, -fls) are not.
+find:
+  mode: whitelist
+  valueless_flags: [-L, -H, -P, -xdev, -mount, -depth, -daystart, -follow, -empty, -readable,
+    -writable, -executable, -nouser, -nogroup, -true, -false, -not, -a, -and, -o, -or, -prune,
+    -quit, -print, -print0, -ls]
+  flags:
+    - { flag: -maxdepth, value_pattern: '[0-9]{1,3}' }
+    - { flag: -mindepth, value_pattern: '[0-9]{1,3}' }
+    - { flag: -name, value_pattern: '.+' }
+    - { flag: -iname, value_pattern: '.+' }
+    - { flag: -path, value_pattern: '.+' }
+    - { flag: -ipath, value_pattern: '.+' }
+    - { flag: -regex, value_pattern: '.+' }
+    - { flag: -iregex, value_pattern: '.+' }
+    - { flag: -type, value_pattern: '[bcdpflsD](?:,[bcdpflsD]){0,6}' }
+    - { flag: -size, value_pattern: '[+-]?[0-9]{1,12}[bcwkMG]?' }
+    - { flag: -mtime, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -mmin, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -ctime, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -cmin, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -atime, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -amin, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -links, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -inum, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -uid, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -gid, value_pattern: '[+-]?[0-9]{1,12}' }
+    - { flag: -newer, value_pattern: '.+' }
+    - { flag: -newermt, value_pattern: '.{1,128}' }
+    - { flag: -newerct, value_pattern: '.{1,128}' }
+    - { flag: -newerat, value_pattern: '.{1,128}' }
+    - { flag: -samefile, value_pattern: '.+' }
+    - { flag: -user, value_pattern: '[A-Za-z0-9_.@-]{1,64}' }
+    - { flag: -group, value_pattern: '[A-Za-z0-9_.@-]{1,64}' }
+    - { flag: -perm, value_pattern: '[-/]?[0-7ugoarwxXst,=+-]{1,32}' }
+    - { flag: -fstype, value_pattern: '[A-Za-z0-9_.-]{1,32}' }
+    - { flag: -printf, value_pattern: '.+' }
 
 # System information
 whoami:
-  mode: permissive
+  mode: whitelist
+  positional_variants:
+    - []
 hostname:
   mode: whitelist
   positional_variants:
     - []
 uname:
-  mode: permissive
-date:
-  mode: blacklist
+  mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-a, -s, -n, -r, -v, -m, -p, -i, -o,
+    --all, --kernel-name, --nodename, --kernel-release, --kernel-version, --machine, --processor,
+    --hardware-platform, --operating-system]
+  positional_variants:
+    - []
+# `-s`/`--set` and a bare MMDDhhmm operand set the system clock. Neither flag is
+# listed, and the only operand allowed is an output format starting with `+`.
+date:
+  mode: whitelist
+  valueless_flags: [-u, --utc, --universal, -I, -R, --rfc-email]
   flags:
-    - flag: -s
-      value_pattern: '.+'
-    - flag: --set
-      value_pattern: '.+'
+    - { flag: -d, value_pattern: '.{1,128}' }
+    - { flag: --date, value_pattern: '.{1,128}' }
+    - { flag: -r, value_pattern: '.+' }
+    - { flag: --reference, value_pattern: '.+' }
+    - { flag: --iso-8601, value_pattern: '(?:date|hours|minutes|seconds|ns)' }
+    - { flag: --rfc-3339, value_pattern: '(?:date|seconds|ns)' }
+  positional_variants:
+    - []
+    - ['\+.*']
 which:
-  mode: permissive
+  mode: whitelist
+  valueless_flags: [-a]
 
 # Disk usage
 du:
-  mode: permissive
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-s, -h, -a, -c, -x, -k, -m, -b, -L, -S,
+    --summarize, --human-readable, --si, --all, --total, --one-file-system, --apparent-size,
+    --bytes, --dereference, --separate-dirs, --inodes]
+  flags:
+    - { flag: -d, value_pattern: '[0-9]{1,3}' }
+    - { flag: -t, value_pattern: '-?[0-9]{1,12}[A-Za-z]{0,2}' }
+    - { flag: --max-depth, value_pattern: '[0-9]{1,3}' }
+    - { flag: --threshold, value_pattern: '-?[0-9]{1,12}[A-Za-z]{0,2}' }
+    - { flag: --exclude, value_pattern: '.+' }
 df:
-  mode: permissive
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-h, -H, -i, -T, -a, -k, -m, -l, -P,
+    --human-readable, --si, --inodes, --print-type, --all, --local, --portability, --total]
+  flags:
+    - { flag: -t, value_pattern: '[A-Za-z0-9_.-]{1,32}' }
+    - { flag: -x, value_pattern: '[A-Za-z0-9_.-]{1,32}' }
+    - { flag: -B, value_pattern: '[0-9]{0,6}[A-Za-z]{0,3}' }
+    - { flag: --type, value_pattern: '[A-Za-z0-9_.-]{1,32}' }
+    - { flag: --exclude-type, value_pattern: '[A-Za-z0-9_.-]{1,32}' }
+    - { flag: --block-size, value_pattern: '[0-9]{0,6}[A-Za-z]{0,3}' }
+    - { flag: --output, value_pattern: '[a-z,]{1,128}' }
 
 # Path manipulation
 basename:
-  mode: permissive
+  mode: whitelist
+  valueless_flags: [-a, -z, --multiple, --zero]
+  flags:
+    - { flag: -s, value_pattern: '.+' }
+    - { flag: --suffix, value_pattern: '.+' }
 dirname:
-  mode: permissive
+  mode: whitelist
+  valueless_flags: [-z, --zero]
 
 # Process inspection
 ps:
-  mode: permissive
-top:
-  mode: permissive
-free:
-  mode: permissive
-
-# System logs -- block journal maintenance flags.
-journalctl:
-  mode: blacklist
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-e, -A, -a, -d, -N, -f, -F, -l, -j, -L, -T, -H, -w,
+    --deselect, --forest, --no-headers, --no-heading]
   flags:
-    - flag: --vacuum-size
-      value_pattern: '.+'
-    - flag: --vacuum-time
-      value_pattern: '.+'
-    - flag: --vacuum-files
-      value_pattern: '.+'
-    - flag: --rotate
-      value_pattern: null
-    - flag: --flush
-      value_pattern: null
-    - flag: --sync
-      value_pattern: null
-    - flag: --relinquish-var
-      value_pattern: null
-    - flag: --smart-relinquish-var
-      value_pattern: null
-    - flag: --setup-keys
-      value_pattern: null
-    - flag: --update-catalog
-      value_pattern: null
+    - { flag: -o, value_pattern: '.{1,512}' }
+    - { flag: -p, value_pattern: '[0-9, ]{1,512}' }
+    - { flag: -C, value_pattern: '[A-Za-z0-9_.,+:-]{1,256}' }
+    - { flag: -u, value_pattern: '[A-Za-z0-9_.,@-]{1,128}' }
+    - { flag: -U, value_pattern: '[A-Za-z0-9_.,@-]{1,128}' }
+    - { flag: --format, value_pattern: '.{1,512}' }
+    - { flag: --pid, value_pattern: '[0-9, ]{1,512}' }
+    - { flag: --ppid, value_pattern: '[0-9, ]{1,512}' }
+    - { flag: --user, value_pattern: '[A-Za-z0-9_.,@-]{1,128}' }
+    - { flag: --sort, value_pattern: '[A-Za-z0-9_,+-]{1,128}' }
+    - { flag: --cols, value_pattern: '[0-9]{1,5}' }
+    - { flag: --columns, value_pattern: '[0-9]{1,5}' }
+    - { flag: --width, value_pattern: '[0-9]{1,5}' }
+# Batch mode with an iteration count is required so top returns instead of
+# running until the command timeout.
+top:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-b, -c, -H, -i, -w, '-1']
+  flags:
+    - { flag: -n, value_pattern: '[1-9][0-9]?' }
+    - { flag: -d, value_pattern: '[0-9]{1,3}(?:\.[0-9]{1,2})?' }
+    - { flag: -o, value_pattern: '[+-]?[A-Za-z0-9%_]{1,16}' }
+    - { flag: -p, value_pattern: '[0-9,]{1,256}' }
+    - { flag: -u, value_pattern: '[A-Za-z0-9_.@!-]{1,64}' }
+  require_flags:
+    - -b
+    - -n
+  positional_variants:
+    - []
+free:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-h, -b, -k, -m, -g, -t, -w, -l,
+    --human, --bytes, --kilo, --mega, --giga, --si, --total, --wide, --lohi]
+  positional_variants:
+    - []
+
+# System logs -- only query and output flags are listed. Journal maintenance
+# (--vacuum-*, --rotate, --flush, --sync, --relinquish-var, --setup-keys,
+# --update-catalog), --cursor-file, which writes a file, and follow mode are not.
+journalctl:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-b, -k, -r, -e, -x, -q, -a, -l, -N,
+    --boot, --dmesg, --reverse, --pager-end, --catalog, --quiet, --all, --full, --no-full,
+    --no-pager, --no-hostname, --utc, --system, --user, --fields, --list-boots, --disk-usage]
+  flags:
+    - { flag: -u, value_pattern: '[A-Za-z0-9_.@:*-]{1,256}' }
+    - { flag: -n, value_pattern: '(?:[0-9]{1,5}|all)' }
+    - { flag: -S, value_pattern: '.{1,128}' }
+    - { flag: -U, value_pattern: '.{1,128}' }
+    - { flag: -p, value_pattern: '[A-Za-z0-9.]{1,32}' }
+    - { flag: -o, value_pattern: '[a-z0-9-]{1,32}' }
+    - { flag: -g, value_pattern: '.+' }
+    - { flag: -t, value_pattern: '[A-Za-z0-9_.@:/-]{1,128}' }
+    - { flag: -F, value_pattern: '[A-Za-z0-9_]{1,64}' }
+    - { flag: --unit, value_pattern: '[A-Za-z0-9_.@:*-]{1,256}' }
+    - { flag: --lines, value_pattern: '(?:[0-9]{1,5}|all)' }
+    - { flag: --since, value_pattern: '.{1,128}' }
+    - { flag: --until, value_pattern: '.{1,128}' }
+    - { flag: --priority, value_pattern: '[A-Za-z0-9.]{1,32}' }
+    - { flag: --output, value_pattern: '[a-z0-9-]{1,32}' }
+    - { flag: --output-fields, value_pattern: '[A-Za-z0-9_,]{1,512}' }
+    - { flag: --grep, value_pattern: '.+' }
+    - { flag: --identifier, value_pattern: '[A-Za-z0-9_.@:/-]{1,128}' }
+    - { flag: --field, value_pattern: '[A-Za-z0-9_]{1,64}' }
 
 # Archive inspection -- allow listing but not extraction.
+# tar reads a first operand without a dash as an option cluster, so `tar xf FILE`
+# extracts. `-t` is therefore required and operands are not accepted; the archive
+# is named with `-f` or piped in. A name containing a colon is refused because
+# tar would open it on a remote host.
 tar:
   mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-t, -z, -j, -J, -v]
   flags:
-    - flag: -t
-      value_pattern: null
-    - flag: -z
-      value_pattern: null
-    - flag: -j
-      value_pattern: null
-    - flag: -v
-      value_pattern: null
+    - { flag: -f, value_pattern: '(?:-|(?!-)[^:]{1,4096})' }
+  require_flags:
+    - -t
+  positional_variants:
+    - []
+# unzip extracts unless a listing flag is given, so `-l` is required.
 unzip:
   mode: whitelist
-  flags:
-    - flag: -l
-      value_pattern: null
-    - flag: -v
-      value_pattern: null
+  valueless_flags: [-l, -v]
+  require_flags:
+    - -l
 zipinfo:
-  mode: permissive
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: ['-1', '-2', -l, -m, -s, -v, -h, -t, -T, -z]
 
 # Structured data processing
+# `--arg` and the other two-value flags are not listed because a flag here takes
+# at most one value.
 jq:
-  mode: permissive
-xmllint:
-  mode: blacklist
-  flags:
-    - flag: --output
-      value_pattern: '.+'
-    - flag: --shell
-      value_pattern: null
-yq:
-  mode: blacklist
+  mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-r, -c, -s, -n, -e, -S, -M, -C, -a, -j, -R,
+    --raw-output, --compact-output, --slurp, --null-input, --exit-status, --sort-keys,
+    --monochrome-output, --color-output, --ascii-output, --join-output, --raw-input, --tab]
   flags:
-    - flag: -i
-      value_pattern: null
-    - flag: --in-place
-      value_pattern: null
+    - { flag: --indent, value_pattern: '[0-7]' }
+# xmllint accepts every option with one or two dashes; only the two-dash
+# spellings are listed. `--output`/`-o` writes a file and `--shell` can save
+# files, so neither is listed. Operands and schema locations must not be URLs,
+# which xmllint would fetch.
+xmllint:
+  mode: whitelist
+  valueless_flags: [--noout, --format, --valid, --nonet, --html, --recover, --noblanks, --nocdata,
+    --c14n, --version]
+  flags:
+    - { flag: --xpath, value_pattern: '.+' }
+    - { flag: --schema, value_pattern: '(?![A-Za-z][A-Za-z0-9+.-]*://).+' }
+    - { flag: --relaxng, value_pattern: '(?![A-Za-z][A-Za-z0-9+.-]*://).+' }
+    - { flag: --encode, value_pattern: '[A-Za-z0-9_.:-]{1,32}' }
+    - { flag: --pretty, value_pattern: '[0-2]' }
+  positional_variants:
+    - args: []
+      rest_pattern: '(?![A-Za-z][A-Za-z0-9+.-]*://).+'
+      min_rest: 0
+      max_rest: 32
+# Two different tools are installed under this name. In-place editing (`-i`,
+# `--in-place`, `--inplace`) and file splitting (`-s`, `--split-exp`) are not
+# listed in any spelling.
+yq:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-r, -e, -n, -c, -y, -P, -N, -M, -V,
+    --exit-status, --null-input, --prettyPrint, --no-colors, --no-doc, --version]
+  flags:
+    - { flag: -o, value_pattern: '[a-z]{1,16}' }
+    - { flag: -p, value_pattern: '[a-z]{1,16}' }
+    - { flag: -I, value_pattern: '[0-9]{1,2}' }
+    - { flag: --output-format, value_pattern: '[a-z]{1,16}' }
+    - { flag: --input-format, value_pattern: '[a-z]{1,16}' }
+    - { flag: --indent, value_pattern: '[0-9]{1,2}' }
 
 # Network diagnostics
 ping:
@@ -225,29 +459,39 @@ ping:
   require_flags:
     - -c
 netstat:
-  mode: permissive
-ss:
-  mode: blacklist
+  mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-l, -n, -t, -u, -p, -a, -r, -i, -s, -e, -x, -g, -W, '-4', '-6',
+    --listening, --numeric, --numeric-hosts, --numeric-ports, --numeric-users, --tcp, --udp, --unix,
+    --programs, --all, --route, --interfaces, --statistics, --extend, --groups, --wide]
+  positional_variants:
+    - []
+# `-K`/`--kill` closes sockets and `-D`/`--diag` writes a file, so neither is
+# listed. Filter expressions are operands.
+ss:
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-l, -n, -t, -u, -p, -a, -e, -m, -i, -s, -x, -w, -r, -o, -H, -O, '-4', '-6',
+    --listening, --numeric, --tcp, --udp, --unix, --raw, --processes, --all, --extended, --memory,
+    --info, --summary, --resolve, --options, --no-header, --oneline, --ipv4, --ipv6]
   flags:
-    - flag: -K
-      value_pattern: null
-    - flag: --kill
-      value_pattern: null
+    - { flag: -f, value_pattern: '(?:unix|inet|inet6|link|netlink|vsock|tipc|xdp)' }
+    - { flag: -A, value_pattern: '[a-z_,]{1,64}' }
+    - { flag: --family, value_pattern: '(?:unix|inet|inet6|link|netlink|vsock|tipc|xdp)' }
+    - { flag: --query, value_pattern: '[a-z_,]{1,64}' }
 iostat:
-  mode: permissive
+  mode: whitelist
+  allows_flag_bundling: true
+  valueless_flags: [-x, -d, -c, -k, -m, -h, -t, -N, -z, -y, -s, --human, --pretty]
+  flags:
+    - { flag: -o, value_pattern: 'JSON' }
 nc:
   mode: whitelist
   allows_flag_bundling: true
+  valueless_flags: [-z, -v, -u]
   flags:
-    - flag: -z
-      value_pattern: null
-    - flag: -v
-      value_pattern: null
     - flag: -w
       value_pattern: '[0-9]+(?:\.[0-9]+)?'
-    - flag: -u
-      value_pattern: null
   require_flags:
     - -z
 
@@ -256,9 +500,7 @@ nc:
 # sudo form is rejected. Remove this policy to disable privileged execution.
 sudo:
   mode: whitelist
-  flags:
-    - { flag: -n, value_pattern: null }
-    - { flag: -l, value_pattern: null }
+  valueless_flags: [-n, -l]
   require_flags:
     - -n
     - -l

@@ -62,7 +62,7 @@ class PolicyLoadingTests(unittest.TestCase):
     def test_yaml_is_the_sole_policy_source(self) -> None:
         with TemporaryDirectory() as temp_dir:
             policy_dir = Path(temp_dir)
-            self.write_policy(policy_dir, "only.yaml", "probe:\n  mode: permissive\n")
+            self.write_policy(policy_dir, "only.yaml", "probe:\n  mode: blacklist\n")
             loaded = load_command_policies(policy_dir)
         self.assertEqual(set(loaded), {"probe"})
 
@@ -86,7 +86,7 @@ class PolicyLoadingTests(unittest.TestCase):
     def test_duplicate_command_across_files_fails_startup(self) -> None:
         with TemporaryDirectory() as temp_dir:
             policy_dir = Path(temp_dir)
-            content = "probe:\n  mode: permissive\n"
+            content = "probe:\n  mode: blacklist\n"
             self.write_policy(policy_dir, "first.yaml", content)
             self.write_policy(policy_dir, "second.yaml", content)
             with self.assertRaisesRegex(
@@ -101,7 +101,7 @@ class PolicyLoadingTests(unittest.TestCase):
             self.write_policy(
                 policy_dir,
                 "duplicate.yaml",
-                "probe:\n  mode: permissive\nprobe:\n  mode: whitelist\n",
+                "probe:\n  mode: blacklist\nprobe:\n  mode: whitelist\n",
             )
             with self.assertRaisesRegex(ValueError, "Duplicate YAML key 'probe'"):
                 load_command_policies(policy_dir)
@@ -160,7 +160,7 @@ class ShippedPolicyRegressionTests(unittest.TestCase):
             with self.subTest(pipeline=pipeline):
                 self.assert_validation(pipeline, False, "not executed")
 
-    def test_abbreviated_blocked_long_flags_are_rejected(self) -> None:
+    def test_abbreviated_modifying_long_flags_are_rejected(self) -> None:
         for pipeline in (
             single("sort", "--outp=file", "input.txt"),
             single("sort", "--outp", "file", "input.txt"),
@@ -184,9 +184,231 @@ class ShippedPolicyRegressionTests(unittest.TestCase):
             single("docker", "exec", "web", "date", "--se=now"),
         ):
             with self.subTest(pipeline=pipeline):
-                self.assert_validation(pipeline, False, "abbreviates blocked flag")
+                self.assert_validation(pipeline, False, "is not allowed")
 
-    def test_long_flags_that_do_not_abbreviate_blocked_flags_are_accepted(self) -> None:
+    def test_other_spellings_of_modifying_flags_are_rejected(self) -> None:
+        for pipeline in (
+            single("xmllint", "-o", "output.xml", "input.xml"),
+            single("xmllint", "-output", "output.xml", "input.xml"),
+            single("xmllint", "--output", "output.xml", "input.xml"),
+            single("xmllint", "-shell", "input.xml"),
+            single("xmllint", "--shell", "input.xml"),
+            single("xmllint", "-noout", "input.xml"),
+            single("yq", "-i", ".value = 1", "data.yaml"),
+            single("yq", "--inplace", ".value = 1", "data.yaml"),
+            single("yq", "--in-place", ".value = 1", "data.yaml"),
+            single("yq", "-s", ".name", "data.yaml"),
+            single("yq", "--split-exp", ".name", "data.yaml"),
+            single("yq", "-ri", ".value", "data.yaml"),
+            single("journalctl", "--cursor-file=/etc/passwd"),
+            single("journalctl", "--cursor-file", "/tmp/cursor", "-n", "1"),
+            single("journalctl", "--rotate"),
+            single("journalctl", "--vacuum-time=1s"),
+            single("journalctl", "-f"),
+            single("journalctl", "--follow"),
+            single("ss", "-D", "/tmp/dump"),
+            single("ss", "--diag=/tmp/dump"),
+            single("ss", "-tD", "/tmp/dump"),
+            single("ss", "--kill", "dst", "192.0.2.1"),
+            single("sort", "-T", "/tmp", "input.txt"),
+            single("sort", "--temporary-directory=/tmp", "input.txt"),
+            single("sort", "--files0-from=list"),
+            single("find", ".", "-exec", "id", ";"),
+            single("find", ".", "-execdir", "id", ";"),
+            single("find", ".", "-ok", "id", ";"),
+            single("find", ".", "-delete"),
+            single("find", ".", "-fprintf", "out", "%p"),
+            single("find", ".", "-fls", "out"),
+            single("file", "-p", "/etc/passwd"),
+            single("file", "--preserve-date", "/etc/passwd"),
+            single("tail", "-f", "/var/log/syslog"),
+            single("tail", "--follow", "/var/log/syslog"),
+        ):
+            with self.subTest(pipeline=pipeline):
+                self.assert_validation(pipeline, False, "not executed")
+
+    def test_operands_that_select_modifying_behaviour_are_rejected(self) -> None:
+        for pipeline in (
+            single("date", "010112002030"),
+            single("date", "-u", "010112002030"),
+            single("date", "--", "010112002030"),
+            single("date", "+%s", "010112002030"),
+            single("date", "-s", "2030-01-01"),
+            single("sudo", "-n", "--", "date", "010112002030"),
+            single("xmllint", "http://example.com/data.xml"),
+            single("xmllint", "--noout", "ftp://example.com/data.xml"),
+            single("xmllint", "--schema", "https://example.com/s.xsd", "input.xml"),
+            single("top"),
+            single("top", "-b"),
+            single("top", "-n", "1"),
+            single("top", "-b", "-n", "1", "extra"),
+            single("uptime", "extra"),
+            single("whoami", "extra"),
+            single("pwd", "extra"),
+            single("free", "extra"),
+        ):
+            with self.subTest(pipeline=pipeline):
+                self.assert_validation(pipeline, False, "not executed")
+
+    def test_archive_tools_can_only_list(self) -> None:
+        rejected: tuple[list[CommandStage], ...] = (
+            single("tar", "xf", "archive.tar"),
+            single("tar", "xzPf", "backup.tgz"),
+            single("tar", "cf", "out.tar", "/etc"),
+            single("tar", "tf", "archive.tar"),
+            single("tar", "-xf", "archive.tar"),
+            single("tar", "-x", "-f", "archive.tar"),
+            single("tar", "-cf", "out.tar", "/etc"),
+            single("tar", "-zf", "archive.tgz"),
+            single("tar", "-f", "archive.tar"),
+            single("tar", "-tf", "archive.tar", "member"),
+            single("tar", "-tf", "archive.tar", "xf"),
+            single("tar", "-tf", "host:archive.tar"),
+            single("tar", "-tf", "user@host:/backup.tar"),
+            single("tar", "-tf", "--to-command=id"),
+            single("tar", "-tf", "archive.tar", "--to-command=id"),
+            single("tar", "-tf", "archive.tar", "-C", "/tmp"),
+            single("tar", "--extract", "--file=archive.tar"),
+            single("unzip", "archive.zip"),
+            single("unzip", "-v", "archive.zip"),
+            single("unzip", "-o", "archive.zip"),
+            single("unzip", "-l", "archive.zip", "-d", "/tmp"),
+            single("sudo", "-n", "--", "tar", "xPf", "backup.tar"),
+            single("sudo", "-n", "--", "unzip", "archive.zip"),
+        )
+        accepted: tuple[list[CommandStage], ...] = (
+            single("tar", "-tf", "archive.tar"),
+            single("tar", "-tzvf", "/var/backups/archive.tgz"),
+            single("tar", "-tJf", "archive.tar.xz"),
+            single("tar", "-t", "-v", "-f", "archive.tar"),
+            single("tar", "-tf", "-"),
+            single("tar", "-tz"),
+            [
+                {"command": "cat", "arguments": ["archive.tgz"]},
+                {"command": "tar", "arguments": ["-tz"]},
+            ],
+            single("unzip", "-l", "archive.zip"),
+            single("unzip", "-l", "-v", "archive.zip"),
+            single("zipinfo", "archive.zip"),
+        )
+        for pipeline in rejected:
+            with self.subTest(pipeline=pipeline):
+                self.assert_validation(pipeline, False, "not executed")
+        for pipeline in accepted:
+            with self.subTest(pipeline=pipeline):
+                self.assert_validation(pipeline, True)
+
+    def test_unlisted_harmless_flags_are_rejected_not_guessed(self) -> None:
+        for pipeline in (
+            single("ls", "--color=always", "/etc"),
+            single("grep", "--color=never", "pattern", "file"),
+            single("head", "-20", "file"),
+            single("jq", "--arg", "name", "value", ".", "file.json"),
+            single("cat", "--unknown", "file"),
+        ):
+            with self.subTest(pipeline=pipeline):
+                self.assert_validation(pipeline, False, "is not allowed")
+
+    def test_most_useful_read_only_forms_are_accepted(self) -> None:
+        for pipeline in (
+            single("ls", "-la", "/etc"),
+            single("ls", "-laR", "--time-style=long-iso", "/var/log"),
+            single("ls", "-lt", "/var/log"),
+            single("cat", "-n", "/etc/hosts"),
+            single("stat", "-c", "%U %G %a %n", "/etc/passwd"),
+            single("stat", "--format=%s", "/etc/passwd"),
+            single("grep", "-Ei", "^(a|b)", "/etc/hosts"),
+            single("grep", "-rl", "needle", "/etc"),
+            single("grep", "-F", "-A", "3", "-B", "2", "needle", "file"),
+            single("grep", "-e", "-leading-dash", "file"),
+            single("grep", "--include=*.conf", "-rn", "needle", "/etc"),
+            single("head", "-n", "30", "file"),
+            single("head", "-n30", "file"),
+            single("tail", "-n", "+5", "file"),
+            single("wc", "-lcL", "file"),
+            single("cut", "-d:", "-f1,3", "/etc/passwd"),
+            single("cut", "-c1-170"),
+            single("tr", "-d", "\\r"),
+            single("tr", "a-z", "A-Z"),
+            single("diff", "-u", "left", "right"),
+            single("comm", "-23", "left", "right"),
+            single("sort", "-t,", "-k2,2n", "-u", "input.txt"),
+            single("sort", "-rnk2", "input.txt"),
+            single("find", "/app", "-maxdepth", "4", "-type", "f", "-ls"),
+            single("find", "/var", "-newermt", "2026-11-18 10:00", "-name", "*.log"),
+            single("find", ".", "(", "-name", "a", "-o", "-name", "b", ")", "-print"),
+            single("uname", "-a"),
+            single("whoami"),
+            single("pwd"),
+            single("date", "-u", "+%Y-%m-%dT%H:%M:%SZ"),
+            single("date", "-d", "yesterday", "+%F"),
+            single("date", "-I"),
+            single("which", "-a", "python3"),
+            single("du", "-sh", "/var/log"),
+            single("du", "-ah", "--max-depth=2", "/var"),
+            single("df", "-hT"),
+            single("df", "--output=source,pcent", "/"),
+            single("basename", "/var/log/syslog", ".log"),
+            single("dirname", "/var/log/syslog"),
+            single("ps", "aux"),
+            single("ps", "-ef"),
+            single("ps", "-o", "pid,lstart,comm,args", "-p", "42482,4180328"),
+            single("ps", "-C", "dockerd", "-o", "pid,etimes,args", "--no-headers"),
+            single("ps", "-L", "-p", "788", "-o", "pid,lwp,stat,wchan:32,comm"),
+            single("top", "-b", "-n", "1"),
+            single("top", "-bn1", "-o", "%MEM"),
+            single("free", "-h"),
+            single("journalctl", "-u", "docker", "--since", "-1h", "--no-pager"),
+            single("journalctl", "-u", "x", "-o", "short-iso", "--grep", "error"),
+            single("journalctl", "-xe", "--no-pager"),
+            single("journalctl", "-b", "-p", "err..alert", "-n", "50"),
+            single("journalctl", "_SYSTEMD_UNIT=ssh.service", "-n", "20"),
+            single("zipinfo", "-1", "archive.zip"),
+            single("jq", "-rc", ".items[]", "data.json"),
+            single("jq", "--indent", "2", ".", "data.json"),
+            single("xmllint", "--noout", "--nonet", "input.xml"),
+            single("xmllint", "--xpath", "//server/@port", "/etc/app/server.xml"),
+            single("yq", "-r", ".services", "compose.yaml"),
+            single("yq", "-o", "json", ".", "data.yaml"),
+            single("yq", "e", "-P", ".a.b", "data.yaml"),
+            single("netstat", "-lntup"),
+            single("ss", "-xnp"),
+            single("ss", "-t", "state", "established", "( dport = :22 )"),
+            single("ss", "-f", "inet", "-ln"),
+            single("iostat", "-dxk", "1", "3"),
+            single("id", "-un"),
+            single("id", "root"),
+            single("uptime", "-p"),
+            single("file", "-b", "-i", "/bin/ls"),
+        ):
+            with self.subTest(pipeline=pipeline):
+                self.assert_validation(pipeline, True)
+
+    def test_every_shipped_policy_is_a_whitelist(self) -> None:
+        def offending(name: str, raw_policy: object) -> list[str]:
+            node = cast(dict[str, object], raw_policy)
+            if "handler" in node:
+                return []
+            found: list[str] = [] if node.get("mode") == "whitelist" else [name]
+            children = cast(dict[str, object], node.get("subcommands", {}))
+            for child_name, child in children.items():
+                found.extend(offending(f"{name} {child_name}", child))
+            return found
+
+        policy_dir = REPOSITORY_ROOT / "config" / "policies"
+        policy_files = sorted(policy_dir.glob("*.yaml"))
+        self.assertGreaterEqual(len(policy_files), 5)
+        not_whitelist: list[str] = []
+        commands = 0
+        for path in policy_files:
+            raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for name, raw_policy in cast(dict[str, object], raw).items():
+                commands += 1
+                not_whitelist.extend(offending(name, raw_policy))
+        self.assertEqual(not_whitelist, [])
+        self.assertEqual(commands, len(COMMAND_POLICIES))
+
+    def test_long_flags_of_converted_commands_are_accepted(self) -> None:
         for pipeline in (
             single("sort", "--reverse", "--numeric-sort", "input.txt"),
             single("sort", "--check", "input.txt"),
@@ -457,13 +679,8 @@ class SudoPolicyTests(unittest.TestCase):
         self.assertEqual(sudo["nested_commands"], [["-n", "--"]])
         self.assertEqual(sudo["required_flags"], ["-n", "-l"])
         self.assertEqual(sudo["positional_variants"], [[]])
-        self.assertEqual(
-            sudo["allowed_flags"],
-            [
-                {"flag": "-n", "value_pattern": None},
-                {"flag": "-l", "value_pattern": None},
-            ],
-        )
+        self.assertEqual(sudo["allowed_valueless_flags"], ["-n", "-l"])
+        self.assertNotIn("allowed_flags", sudo)
         self.assertNotIn("handler", sudo)
 
     def test_dry_runs_and_discovery_do_not_connect_to_ssh(self) -> None:
@@ -519,8 +736,8 @@ class DockerPolicyTests(unittest.TestCase):
     POLICIES: ClassVar[dict[str, CommandPolicy]] = {
         "docker": DOCKER_POLICY,
         "nodetool": NODETOOL_POLICY,
-        "uptime": policy("uptime", {"mode": "permissive"}),
-        "grep": policy("grep", {"mode": "permissive"}),
+        "uptime": policy("uptime", {"mode": "blacklist"}),
+        "grep": policy("grep", {"mode": "blacklist"}),
         "curl": CURL_POLICY,
     }
 
@@ -1090,7 +1307,7 @@ class GenericDispatchTests(unittest.TestCase):
             "wrapper": policy(
                 "wrapper", {"mode": "whitelist", "nested_commands": [["run", "web"]]}
             ),
-            "uptime": policy("uptime", {"mode": "permissive"}),
+            "uptime": policy("uptime", {"mode": "blacklist"}),
         }
         self.assertTrue(self.check(policies, "wrapper", "run", "web", "uptime")[0])
         for prefix in (("RUN", "web"), ("run-extra", "web"), ("run", "web-extra")):
@@ -1104,7 +1321,7 @@ class GenericDispatchTests(unittest.TestCase):
                     "mode": "whitelist",
                     "positional_variants": [["run", "uptime"]],
                     "nested_commands": prefixes,
-                    "subcommands": {"run": {"mode": "permissive"}},
+                    "subcommands": {"run": {"mode": "blacklist"}},
                 },
             )
             policies = {"wrapper": wrapper}
@@ -1126,7 +1343,7 @@ class GenericDispatchTests(unittest.TestCase):
                     },
                 },
             ),
-            "uptime": policy("uptime", {"mode": "permissive"}),
+            "uptime": policy("uptime", {"mode": "blacklist"}),
         }
         self.assertTrue(self.check(policies, "tool", "run", "web", "uptime")[0])
         self.assertFalse(self.check(policies, "tool", "run", "web")[0])
@@ -1136,7 +1353,7 @@ class GenericDispatchTests(unittest.TestCase):
             "wrapper": policy(
                 "wrapper", {"mode": "whitelist", "nested_commands": [[]]}
             ),
-            "uptime": policy("uptime", {"mode": "permissive"}),
+            "uptime": policy("uptime", {"mode": "blacklist"}),
         }
         self.assertTrue(self.check(policies, "wrapper", "uptime")[0])
         self.assertFalse(self.check(policies, "wrapper")[0])
@@ -1161,7 +1378,7 @@ class GenericDispatchTests(unittest.TestCase):
                 )
                 for index in range(count)
             }
-            policies["uptime"] = policy("uptime", {"mode": "permissive"})
+            policies["uptime"] = policy("uptime", {"mode": "blacklist"})
             arguments = [*(f"wrapper{index}" for index in range(1, count)), "uptime"]
             accepted, reason = self.check(policies, "wrapper0", *arguments)
             self.assertEqual(accepted, expected, reason)
@@ -1278,10 +1495,37 @@ class ExplicitPolicyModeTests(unittest.TestCase):
                 self.subTest(mode=mode),
                 self.assertRaisesRegex(
                     ValueError,
-                    "field 'mode' must be permissive, blacklist, or whitelist",
+                    "field 'mode' must be whitelist or blacklist",
                 ),
             ):
                 policy("probe", {"mode": mode})
+
+    def test_removed_permissive_mode_names_its_replacements(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "'mode: permissive', which was removed"
+        ) as error:
+            policy("probe", {"mode": "permissive"})
+        message = str(error.exception)
+        self.assertIn("probe", message)
+        self.assertIn("'mode: whitelist'", message)
+        self.assertIn("'mode: blacklist' without flags", message)
+
+        with TemporaryDirectory() as temp_dir:
+            policy_dir = Path(temp_dir)
+            (policy_dir / "legacy.yaml").write_text(
+                "probe:\n  mode: whitelist\n  subcommands:\n    run:\n      mode: permissive\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "which was removed"):
+                load_command_policies(policy_dir)
+
+    def test_blacklist_without_flags_allows_every_flag_and_operand(self) -> None:
+        open_policy = policy("probe", {"mode": "blacklist"})
+        with patch.dict(COMMAND_POLICIES, {"probe": open_policy}, clear=True):
+            for arguments in ((), ("--any", "-x", "operand"), ("--flag=value",)):
+                with self.subTest(arguments=arguments):
+                    accepted, reason = validate_pipeline(single("probe", *arguments))
+                    self.assertTrue(accepted, msg=reason)
 
     def test_explicit_child_modes_control_validation_and_discovery(self) -> None:
         router = policy(
@@ -1291,7 +1535,7 @@ class ExplicitPolicyModeTests(unittest.TestCase):
                 "flags": [{"flag": "--help", "value_pattern": None}],
                 "subcommands": {
                     "strict": {"mode": "whitelist"},
-                    "open": {"mode": "permissive"},
+                    "open": {"mode": "blacklist"},
                     "limited": {
                         "mode": "blacklist",
                         "flags": [{"flag": "--write", "value_pattern": None}],
@@ -1320,10 +1564,10 @@ class ExplicitPolicyModeTests(unittest.TestCase):
         children = cast(dict[str, dict[str, object]], probe["subcommands"])
         self.assertEqual(probe["mode"], "whitelist")
         self.assertEqual(children["strict"]["mode"], "whitelist")
-        self.assertEqual(children["open"]["mode"], "permissive")
+        self.assertEqual(children["open"]["mode"], "blacklist")
         self.assertEqual(children["limited"]["mode"], "blacklist")
 
-    def test_runtime_and_nested_policies_cannot_fall_back_to_permissive(self) -> None:
+    def test_runtime_and_nested_policies_cannot_fall_back_to_allowing_all(self) -> None:
         wrapper = policy("wrapper", {"mode": "whitelist", "nested_commands": [["run"]]})
         with patch.dict(
             COMMAND_POLICIES, {"probe": {}, "wrapper": wrapper}, clear=True
@@ -1351,7 +1595,7 @@ class RecursivePolicySchemaTests(unittest.TestCase):
     def test_invalid_recursive_policy_fields_fail_closed(self) -> None:
         cases: tuple[tuple[object, str], ...] = (
             (
-                {"mode": "permissive", "subcommands": {"ps": {"mode": "whitelist"}}},
+                {"mode": "blacklist", "subcommands": {"ps": {"mode": "whitelist"}}},
                 "only in whitelist",
             ),
             ({"mode": "blacklist", "nested_commands": [["run"]]}, "only in whitelist"),
@@ -1916,6 +2160,191 @@ class FlagNormalizationTests(unittest.TestCase):
                 self.assertFalse(accepted, msg=reason)
                 self.assertIn("is not allowed", reason)
 
+    def test_valueless_flags_equal_flags_with_a_null_value_pattern(self) -> None:
+        compact = policy(
+            "report",
+            {
+                "mode": "whitelist",
+                "allows_flag_bundling": True,
+                "valueless_flags": ["-a", "-1", "--no-pager"],
+                "flags": [{"flag": "--limit", "value_pattern": "[0-9]{1,3}"}],
+                "positional_variants": [[]],
+            },
+        )
+        verbose = policy(
+            "report",
+            {
+                "mode": "whitelist",
+                "allows_flag_bundling": True,
+                "flags": [
+                    {"flag": "-a", "value_pattern": None},
+                    {"flag": "-1", "value_pattern": None},
+                    {"flag": "--no-pager", "value_pattern": None},
+                    {"flag": "--limit", "value_pattern": "[0-9]{1,3}"},
+                ],
+                "positional_variants": [[]],
+            },
+        )
+        self.assertEqual(compact.get("flags"), verbose.get("flags"))
+        self.assertNotIn("valueless_flags", compact)
+
+        cases: tuple[tuple[tuple[str, ...], bool], ...] = (
+            (("-a", "--no-pager", "--limit", "20"), True),
+            (("-a1",), True),
+            (("--no-pager=true",), False),
+            (("-a", "value"), False),
+            (("--unknown",), False),
+        )
+        for arguments, expected in cases:
+            for name, candidate in (("compact", compact), ("verbose", verbose)):
+                with (
+                    self.subTest(arguments=arguments, policy=name),
+                    patch.dict(COMMAND_POLICIES, {"report": candidate}, clear=True),
+                ):
+                    accepted, reason = validate_pipeline(single("report", *arguments))
+                    self.assertEqual(accepted, expected, msg=reason)
+
+        with patch.dict(COMMAND_POLICIES, {"report": compact}, clear=True):
+            raw_result: object = json.loads(safe_ssh_get_command_rules(["report"]))
+        result = cast(dict[str, object], raw_result)
+        commands = cast(dict[str, dict[str, object]], result["commands"])
+        self.assertEqual(
+            commands["report"]["allowed_valueless_flags"], ["-a", "-1", "--no-pager"]
+        )
+        self.assertEqual(
+            commands["report"]["allowed_flags"],
+            [{"flag": "--limit", "value_pattern": "[0-9]{1,3}"}],
+        )
+        self.assertNotIn("valueless_flags", commands["report"])
+
+    def test_discovery_reports_valueless_flags_as_names(self) -> None:
+        cases: tuple[tuple[dict[str, object], dict[str, object]], ...] = (
+            (
+                {"mode": "whitelist", "valueless_flags": ["-a"]},
+                {"allowed_valueless_flags": ["-a"]},
+            ),
+            (
+                {
+                    "mode": "whitelist",
+                    "flags": [
+                        {"flag": "-a", "value_pattern": None},
+                        {"flag": "-n", "value_pattern": "[0-9]"},
+                    ],
+                },
+                {
+                    "allowed_valueless_flags": ["-a"],
+                    "allowed_flags": [{"flag": "-n", "value_pattern": "[0-9]"}],
+                },
+            ),
+            ({"mode": "whitelist", "flags": []}, {"allowed_flags": []}),
+            ({"mode": "whitelist"}, {}),
+            (
+                {
+                    "mode": "blacklist",
+                    "valueless_flags": ["--write"],
+                    "flags": [{"flag": "-o", "value_pattern": ".+"}],
+                },
+                {
+                    "blocked_valueless_flags": ["--write"],
+                    "blocked_flags": [{"flag": "-o", "value_pattern": ".+"}],
+                },
+            ),
+        )
+        flag_keys = (
+            "allowed_valueless_flags",
+            "allowed_flags",
+            "blocked_valueless_flags",
+            "blocked_flags",
+        )
+        for raw_policy, expected in cases:
+            with (
+                self.subTest(policy=raw_policy),
+                patch.dict(
+                    COMMAND_POLICIES, {"probe": policy("probe", raw_policy)}, clear=True
+                ),
+            ):
+                raw_result: object = json.loads(safe_ssh_get_command_rules(["probe"]))
+                result = cast(dict[str, object], raw_result)
+                commands = cast(dict[str, dict[str, object]], result["commands"])
+                reported = {
+                    key: commands["probe"][key]
+                    for key in flag_keys
+                    if key in commands["probe"]
+                }
+                self.assertEqual(reported, expected)
+
+    def test_valueless_flags_are_blocked_in_blacklist_mode(self) -> None:
+        export = policy(
+            "export", {"mode": "blacklist", "valueless_flags": ["-w", "--write"]}
+        )
+        with patch.dict(COMMAND_POLICIES, {"export": export}, clear=True):
+            for arguments, expected in (
+                (("--read", "input"), True),
+                (("-w",), False),
+                (("--write",), False),
+                (("--wri",), False),
+            ):
+                with self.subTest(arguments=arguments):
+                    accepted, reason = validate_pipeline(single("export", *arguments))
+                    self.assertEqual(accepted, expected, msg=reason)
+
+    def test_invalid_valueless_flags_fail_closed(self) -> None:
+        cases: tuple[tuple[object, str], ...] = (
+            ("-a", "must be an array of flag names"),
+            ({"-a": None}, "must be an array of flag names"),
+            ([-1], "quote names that YAML reads as numbers"),
+            ([None], "must be a flag name string"),
+            (["a"], "must be a flag name string"),
+            (["-"], "must be a flag name string"),
+            (["--"], "must be a flag name string"),
+            (["--flag=value"], "must be a flag name string"),
+            (["-a b"], "must be a flag name string"),
+            ([{"flag": "-a", "value_pattern": None}], "must be a flag name string"),
+            (["-a", "-a"], "duplicates flag '-a'"),
+        )
+        for raw_valueless_flags, fragment in cases:
+            with (
+                self.subTest(valueless_flags=raw_valueless_flags),
+                self.assertRaisesRegex(ValueError, fragment),
+            ):
+                policy(
+                    "report",
+                    {"mode": "whitelist", "valueless_flags": raw_valueless_flags},
+                )
+
+        with self.assertRaisesRegex(ValueError, "duplicates flag '-a'"):
+            policy(
+                "report",
+                {
+                    "mode": "whitelist",
+                    "valueless_flags": ["-a"],
+                    "flags": [{"flag": "-a", "value_pattern": "[0-9]"}],
+                },
+            )
+
+        with TemporaryDirectory() as temp_dir:
+            policy_dir = Path(temp_dir)
+            (policy_dir / "numeric.yaml").write_text(
+                "probe:\n  mode: whitelist\n  valueless_flags: [-a, -1]\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError, "quote names that YAML reads as numbers"
+            ):
+                load_command_policies(policy_dir)
+            (policy_dir / "numeric.yaml").write_text(
+                "probe:\n  mode: whitelist\n  valueless_flags: [-a, '-1']\n",
+                encoding="utf-8",
+            )
+            loaded = load_command_policies(policy_dir)
+        self.assertEqual(
+            loaded["probe"].get("flags"),
+            [
+                {"flag": "-a", "value_pattern": None},
+                {"flag": "-1", "value_pattern": None},
+            ],
+        )
+
     def test_separate_and_inline_long_values_are_equivalent(self) -> None:
         for arguments in (
             ("--format", "json", "--limit", "250", "--no-pager"),
@@ -2035,7 +2464,7 @@ class PolicySchemaTests(unittest.TestCase):
                     "mode": "permissive",
                     "flags": [{"flag": "-n", "value_pattern": None}],
                 },
-                "cannot declare 'flags'",
+                "which was removed",
             ),
             (
                 {
@@ -2146,8 +2575,9 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report["pattern_matching"], "case-sensitive full-string")
         self.assertEqual(report["positional_variants"], [[]])
         flags = cast(list[dict[str, object]], report["allowed_flags"])
+        self.assertEqual([flag["flag"] for flag in flags], ["--format", "--limit"])
         self.assertEqual(flags[0]["value_pattern"], "(?:json|yaml|text|text-compact)")
-        self.assertIsNone(flags[2]["value_pattern"])
+        self.assertEqual(report["allowed_valueless_flags"], ["--no-pager"])
 
     def test_discovery_explains_policy_validated_docker_exec(self) -> None:
         policies = dict(DockerPolicyTests.POLICIES)

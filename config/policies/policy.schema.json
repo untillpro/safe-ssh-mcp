@@ -30,15 +30,17 @@
       ],
       "properties": {
         "mode": {
-          "description": "Required for every generic command and subcommand. Controls undeclared flags; has no default and is not inherited.",
+          "description": "Required for every generic command and subcommand. Controls undeclared flags; has no default and is not inherited. Use whitelist; blacklist accepts every flag it does not list and is discouraged.",
           "enum": [
-            "permissive",
-            "blacklist",
-            "whitelist"
+            "whitelist",
+            "blacklist"
           ]
         },
         "flags": {
           "$ref": "#/$defs/flags"
+        },
+        "valueless_flags": {
+          "$ref": "#/$defs/valuelessFlags"
         },
         "require_flags": {
           "$ref": "#/$defs/flagNames"
@@ -109,25 +111,6 @@
               ]
             }
           }
-        },
-        {
-          "if": {
-            "properties": {
-              "mode": {
-                "const": "permissive"
-              }
-            },
-            "required": [
-              "mode"
-            ]
-          },
-          "then": {
-            "properties": {
-              "flags": {
-                "maxItems": 0
-              }
-            }
-          }
         }
       ]
     },
@@ -144,6 +127,9 @@
         },
         "flags": {
           "$ref": "#/$defs/flags"
+        },
+        "valueless_flags": {
+          "$ref": "#/$defs/valuelessFlags"
         },
         "require_flags": {
           "$ref": "#/$defs/flagNames"
@@ -175,9 +161,18 @@
       "additionalProperties": false
     },
     "flags": {
+      "description": "Flags that take a value, each with the pattern its value must match. A flag without a value may be listed here with value_pattern null or, more briefly, in valueless_flags.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/flag"
+      },
+      "uniqueItems": true
+    },
+    "valuelessFlags": {
+      "description": "Names of flags that take no value; each is equivalent to a flags entry with value_pattern null. A flag must not appear in both lists. Quote names that YAML reads as numbers, such as '-1'.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/flagName"
       },
       "uniqueItems": true
     },

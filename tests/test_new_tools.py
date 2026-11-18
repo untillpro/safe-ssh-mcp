@@ -78,7 +78,7 @@ class DiscoveryToolTests(unittest.TestCase):
         policies: dict[str, CommandPolicy] = {
             "unselected": {},
             "strict": {"mode": "whitelist"},
-            "open": {"mode": "permissive"},
+            "open": {"mode": "blacklist"},
         }
         with patch.dict(COMMAND_POLICIES, policies, clear=True):
             raw_result: object = json.loads(
@@ -87,7 +87,7 @@ class DiscoveryToolTests(unittest.TestCase):
         result = cast(dict[str, object], raw_result)
         commands = cast(dict[str, dict[str, object]], result["commands"])
         self.assertEqual(list(commands), ["open", "strict"])
-        self.assertEqual(commands["open"]["mode"], "permissive")
+        self.assertEqual(commands["open"]["mode"], "blacklist")
         self.assertEqual(commands["strict"]["mode"], "whitelist")
         self.assertNotIn("unselected", commands)
         self.assertNotIn("_compiled", json.dumps(result))

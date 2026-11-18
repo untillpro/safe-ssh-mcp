@@ -16,6 +16,7 @@ systemctl:
 
 journalctl:
   mode: whitelist
+  valueless_flags: [--no-pager]
   flags:
     - flag: -u
       value_pattern: '[A-Za-z0-9_.@:-]{1,128}'
@@ -27,8 +28,6 @@ journalctl:
       value_pattern: '(?!-).{1,128}'
     - flag: -p
       value_pattern: '(?:emerg|alert|crit|err|warning|notice|info|debug|[0-7])'
-    - flag: --no-pager
-      value_pattern: null
   require_flags:
     - -n
   positional_variants:
@@ -37,28 +36,30 @@ journalctl:
 # Each subcommand owns its flags; nested prefixes delegate to effective policies.
 docker:
   mode: whitelist
-  flags:
-    - {flag: --help, value_pattern: null}
+  valueless_flags: [--help]
   nested_commands:
     - ['exec', '[^-].*']
   subcommands:
     ps:
       mode: whitelist
-      flags:
-        - {flag: -a, value_pattern: null}
+      valueless_flags: [-a]
       positional_variants:
         - []
     stats:
       mode: whitelist
-      flags:
-        - {flag: --no-stream, value_pattern: null}
+      valueless_flags: [--no-stream]
       require_flags: [--no-stream]
       positional_variants:
         - []
 
-# Permissive mode is appropriate only when every argument and flag supported by the command is read-only.
+# List only the flags you need; a missing flag is rejected and can be added later.
+# Omitting positional_variants accepts any operands, so restrict them when an
+# operand can select modifying behaviour.
 check-health:
-  mode: permissive
+  mode: whitelist
+  valueless_flags: [--verbose]
+  positional_variants:
+    - []
 
 traceroute:
   mode: whitelist
