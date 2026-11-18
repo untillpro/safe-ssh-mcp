@@ -103,7 +103,7 @@ A pipeline is rejected when:
 Each generic command and subcommand policy must explicitly declare a mode. There is no default and no inheritance from a parent policy; a missing or invalid mode stops startup. Handler policies declare `handler` instead of `mode`:
 
 - `permissive` allows every flag and positional argument. It is only suitable for commands whose complete argument grammar is read-only, such as `ls`, `cat`, `grep`, and `ps`.
-- `blacklist` allows every flag except the structured `flags` entries, which identify blocked flags and whether they have attached or inline values. It is suitable only when unrestricted positional arguments cannot select modifying behavior.
+- `blacklist` allows every flag except the structured `flags` entries, which identify blocked flags and whether they have attached or inline values. A long option that is a proper prefix of a blocked long option, such as `--outp` for `--output`, is rejected as well, because getopt-style parsers accept unambiguous abbreviations. Differently spelled aliases of a blocked flag are not inferred and must be listed. It is suitable only when unrestricted positional arguments cannot select modifying behavior.
 - `whitelist` allows only the structured `flags` entries. An optional `positional_variants` field can define the complete allowed positional grammar.
 - A handler policy delegates command-specific grammar to a deny-by-default Python validator. `curl` uses this mode because destination, credential, and data-input validation cannot be expressed safely through generic flag patterns alone. Docker uses generic `subcommands` and `nested_commands` rules; it has no specialized handler.
 
@@ -155,6 +155,14 @@ The container may be any non-option reference accepted by Docker and is not allo
 
 This design intentionally treats a command allowed on the host as allowed in every reachable container. Policy activation is server-wide. To disable container execution while retaining inspection, remove `nested_commands` from `config/policies/docker.yaml`, leave the root and subcommand rules unchanged, and restart the server. Old `handler: docker` policies must be migrated before startup. See [ADR 006](adr/006-policy-validated-docker-exec.md).
 
+### Policy-validated sudo execution
+
+The bundled [core policy](../config/policies/core.yaml) expresses privileged execution with `nested_commands: [["-n", "--"]]` on a whitelist `sudo` policy. `sudo -n -- COMMAND [ARGUMENTS...]` is accepted when the command and its arguments pass the complete effective policy registry, exactly as a top-level stage would. The fixed prefix leaves sudo no option other than `-n`, and `--` ends sudo's option parsing before the inner command, so inner flags are never interpreted by sudo. An environment assignment in the command position fails because it is not a policy command name, and `sudo` inside `sudo`, directly or through `docker exec`, is rejected by the command-cycle guard.
+
+The same policy declares the valueless flags `-n` and `-l`, requires both, and permits no positional arguments. Because prefix matching precedes flag parsing, these rules apply only to invocations that do not match the `-n --` prefix; `sudo -n -l`, which lists the account's privileges, is therefore the only accepted invocation without a nested command.
+
+Every enabled command is available under sudo. The agent is assumed cooperative and may read whatever root can read; policy validation is the only barrier against modification as root, so a gap in any command policy becomes a root-level gap. Hosts decide the effective privilege through sudoers, and `-n` turns a missing `NOPASSWD` rule into an immediate failure. To disable privileged execution, remove the `sudo` policy and restart the server. See [ADR 007](adr/007-policy-validated-sudo.md).
+
 ## Runtime configuration
 
 - [config/](../config/) beside `safe_ssh_mcp.py` is the default complete configuration directory.
@@ -173,8 +181,8 @@ Directory scanning, metadata, and deletion failures are warnings and do not stop
 
 The unrestricted positional grammar of every shipped permissive policy was reviewed:
 
-- File and path readers (`ls`, `cat`, `pwd`, `file`, `stat`, `du`, `df`, `basename`, `dirname`) use positionals only to select data to read or format.
-- Text and data processors (`grep`, `head`, `tail`, `wc`, `uniq`, `cut`, `tr`, `diff`, `comm`, `jq`) produce output on stdout and have no argument-selected modifying subcommand.
+- File and path readers (`ls`, `cat`, `pwd`, `stat`, `du`, `df`, `basename`, `dirname`) use positionals only to select data to read or format. `file` is instead a blacklist policy that blocks `-C`, `--compile`, and every abbreviation of that long option, because compiling writes a magic file.
+- Text and data processors (`grep`, `head`, `tail`, `wc`, `cut`, `tr`, `diff`, `comm`, `jq`) produce output on stdout and have no argument-selected modifying subcommand. `uniq` is instead a whitelist policy that permits its read-only flags and at most one input operand, because a second operand names an output file.
 - Identity and system readers (`whoami`, `uname`, `which`, `id`, `uptime`) report information without an argument-selected modifying subcommand. `hostname` is instead a whitelist policy that permits only the no-argument read form.
 - Process, archive, and network readers (`ps`, `top`, `free`, `zipinfo`, `netstat`, `iostat`) expose inspection and formatting arguments but no argument-selected modifying subcommand. `ss` is instead a blacklist policy that blocks its socket-terminating `-K` and `--kill` options.
 

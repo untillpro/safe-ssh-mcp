@@ -839,17 +839,21 @@ def _normalize_command_policy(
     return normalized
 
 
-# Threat model (ADR-002):
+# Threat model (ADR-002, extended by ADR-007):
 #
 # Goal: prevent system MODIFICATION and data EXFILTRATION via network.
-# Users already have SSH access so reading files is acceptable.
+# Users already have SSH access so reading files is acceptable. The agent is
+# assumed cooperative: where the account has sudo rights, this includes
+# root-only files, and policy validation is then the only barrier against
+# modification as root.
 #
 # BLOCKED:
 #   - File writes/deletes (rm, mv, cp, touch, mkdir, chmod, chown)
 #   - Arbitrary shell syntax; only server-inserted pipeline separators exist
 #   - Network exfiltration (wget, ssh, scp, rsync); curl only via the
 #     target-allowlisted handler below (see ADR-003)
-#   - Process control (kill, pkill, sudo, su)
+#   - Process control and other privilege changes (kill, pkill, su, and
+#     every sudo form except the two allowed below)
 #   - Command execution via flags (find -exec, find -delete)
 #   - Archive extraction (tar -x, unzip without -l) -- creates files
 #   - Scripting languages with internal exec/write (awk, sed)
@@ -860,6 +864,8 @@ def _normalize_command_policy(
 #   - Literal arguments safely quoted before remote-shell execution
 #   - curl, only to allowlisted targets (handler mode, see ADR-003)
 #   - docker exec, only for commands accepted by the effective policy
+#   - sudo -n -- COMMAND, only for commands accepted by the effective policy,
+#     and sudo -n -l to list the account's privileges (see ADR-007)
 #
 # Every generic command and subcommand must explicitly declare its mode.
 # Mode assignment:
@@ -1393,6 +1399,14 @@ def _flag_rules_by_name(config: CommandPolicy) -> dict[str, FlagPolicy]:
     return {flag["flag"]: flag for flag in config.get("flags", [])}
 
 
+def _abbreviated_blocked_flag(name: str, rules: dict[str, FlagPolicy]) -> str | None:
+    """Return a blocked long flag that getopt-style parsing could select for name."""
+    for flag in rules:
+        if flag.startswith("--") and flag != name and flag.startswith(name):
+            return flag
+    return None
+
+
 def _generic_rejection(cmd_name: str, message: str) -> tuple[bool, str]:
     return (
         False,
@@ -1544,6 +1558,17 @@ def _validate_generic_command(
                     return valid, reason
                 index += 1
                 continue
+
+        if mode == "blacklist" and token.startswith("--"):
+            # Commands using getopt accept any unambiguous prefix of a long
+            # option, so a prefix of a blocked flag must be blocked as well.
+            long_name = token.split("=", 1)[0]
+            blocked_flag = _abbreviated_blocked_flag(long_name, rules)
+            if blocked_flag is not None:
+                return _generic_rejection(
+                    cmd_name,
+                    f"flag '{long_name}' abbreviates blocked flag '{blocked_flag}'",
+                )
 
         short_flag = token[:2]
         if len(token) > 2 and not token.startswith("--"):

@@ -120,6 +120,10 @@ class ShippedPolicyRegressionTests(unittest.TestCase):
             self.assertIn(reason_fragment, reason)
 
     def test_modifying_commands_are_rejected(self) -> None:
+        piped_output_file: list[CommandStage] = [
+            {"command": "jq", "arguments": ["-n", "-r", '"text"']},
+            {"command": "uniq", "arguments": ["-", "output.txt"]},
+        ]
         for pipeline in (
             single("systemctl", "restart", "nginx"),
             single("docker", "rm", "web"),
@@ -137,11 +141,75 @@ class ShippedPolicyRegressionTests(unittest.TestCase):
             single("yq", "-vi", ".value", "data.yaml"),
             single("hostname", "changed-hostname"),
             single("ss", "-K", "dst", "192.0.2.1"),
+            single("uniq", "input.txt", "output.txt"),
+            single("uniq", "-", "output.txt"),
+            single("uniq", "-c", "input.txt", "output.txt"),
+            single("uniq", "--", "input.txt", "output.txt"),
+            single("uniq", "--all-repeated", "prepend", "output.txt"),
+            single("uniq", "--group=append", "input.txt"),
+            single("uniq", "-f", "input.txt", "output.txt"),
+            single("uniq", "--coun", "input.txt"),
+            single("file", "-C", "-m", "magic"),
+            single("file", "--compile", "-m", "magic"),
+            single("file", "--comp", "-m", "magic"),
+            single("file", "--c", "-m", "magic"),
+            single("file", "-bC", "-m", "magic"),
+            single("file", "-Cm", "magic"),
+            piped_output_file,
         ):
             with self.subTest(pipeline=pipeline):
                 self.assert_validation(pipeline, False, "not executed")
 
+    def test_abbreviated_blocked_long_flags_are_rejected(self) -> None:
+        for pipeline in (
+            single("sort", "--outp=file", "input.txt"),
+            single("sort", "--outp", "file", "input.txt"),
+            single("sort", "--o=file", "input.txt"),
+            single("sort", "--compress-prog=sh", "input.txt"),
+            single("sort", "--c", "input.txt"),
+            single("date", "--se=now"),
+            single("date", "--s", "now"),
+            single("journalctl", "--rot"),
+            single("journalctl", "--fl"),
+            single("journalctl", "--vacuum-t=1s"),
+            single("journalctl", "--vacuum-=1"),
+            single("journalctl", "--setup-k"),
+            single("ss", "--kil", "dst", "192.0.2.1"),
+            single("xmllint", "--out=file", "input.xml"),
+            single("xmllint", "--sh", "input.xml"),
+            single("yq", "--in-pl", ".value", "data.yaml"),
+            single("file", "--comp", "-m", "magic"),
+            single("file", "--c", "-m", "magic"),
+            single("sudo", "-n", "--", "sort", "--compress-prog=sh", "input.txt"),
+            single("docker", "exec", "web", "date", "--se=now"),
+        ):
+            with self.subTest(pipeline=pipeline):
+                self.assert_validation(pipeline, False, "abbreviates blocked flag")
+
+    def test_long_flags_that_do_not_abbreviate_blocked_flags_are_accepted(self) -> None:
+        for pipeline in (
+            single("sort", "--reverse", "--numeric-sort", "input.txt"),
+            single("sort", "--check", "input.txt"),
+            single("sort", "--key=2", "input.txt"),
+            single("sort", "--", "--outp=file"),
+            single("date", "--date=yesterday", "--utc"),
+            single("date", "--iso-8601=seconds"),
+            single("journalctl", "--since=today", "--no-pager", "--reverse"),
+            single("journalctl", "--system", "--unit=nginx", "--lines=50"),
+            single("ss", "--listening", "--numeric", "--tcp"),
+            single("xmllint", "--noout", "--xpath", "//a", "input.xml"),
+            single("yq", "--indent=2", ".value", "data.yaml"),
+            single("file", "--brief", "--mime-type", "/etc/passwd"),
+        ):
+            with self.subTest(pipeline=pipeline):
+                self.assert_validation(pipeline, True)
+
     def test_intended_read_only_commands_are_accepted(self) -> None:
+        counted_lines: list[CommandStage] = [
+            {"command": "sort", "arguments": ["input.txt"]},
+            {"command": "uniq", "arguments": ["-c"]},
+            {"command": "sort", "arguments": ["-rn"]},
+        ]
         for pipeline in (
             single("systemctl", "status", "nginx"),
             single("docker", "ps"),
@@ -151,6 +219,16 @@ class ShippedPolicyRegressionTests(unittest.TestCase):
             single("date"),
             single("hostname"),
             single("ss", "-ltn"),
+            single("uniq"),
+            single("uniq", "-c"),
+            single("uniq", "-cd", "input.txt"),
+            single("uniq", "-f", "2", "--skip-chars=3", "-w10", "input.txt"),
+            single("uniq", "--group", "input.txt"),
+            single("uniq", "-D", "-"),
+            single("file", "/etc/passwd"),
+            single("file", "-b", "--mime-type", "/etc/passwd"),
+            single("file", "-m", "magic", "target"),
+            counted_lines,
         ):
             with self.subTest(pipeline=pipeline):
                 self.assert_validation(pipeline, True)
@@ -198,6 +276,209 @@ class ShippedPolicyRegressionTests(unittest.TestCase):
         for pipeline in pipelines:
             with self.subTest(pipeline=pipeline):
                 self.assert_validation(pipeline, True)
+
+
+class SudoPolicyTests(unittest.TestCase):
+    def assert_sudo(self, expected: bool, *arguments: str) -> None:
+        accepted, reason = validate_pipeline(single("sudo", *arguments))
+        self.assertEqual(accepted, expected, msg=f"sudo {arguments!r}: {reason}")
+
+    def assert_pipeline(self, expected: bool, pipeline: list[CommandStage]) -> None:
+        accepted, reason = validate_pipeline(pipeline)
+        self.assertEqual(accepted, expected, msg=f"{pipeline!r}: {reason}")
+
+    def test_run_form_accepts_commands_allowed_by_their_own_policy(self) -> None:
+        cases: tuple[tuple[str, ...], ...] = (
+            ("iptables", "-L", "-n"),
+            ("nft", "list", "ruleset"),
+            ("cat", "/etc/shadow"),
+            ("grep", "-r", "PermitRootLogin", "/etc/ssh"),
+            ("journalctl", "-n", "100", "--no-pager"),
+            ("uniq", "-c", "/var/log/secure"),
+            ("docker", "ps"),
+        )
+        for inner in cases:
+            with self.subTest(inner=inner):
+                self.assert_sudo(True, "-n", "--", *inner)
+
+    def test_list_form_is_accepted(self) -> None:
+        cases: tuple[tuple[str, ...], ...] = (
+            ("-n", "-l"),
+            ("-l", "-n"),
+            ("-n", "-l", "-l"),
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.assert_sudo(True, *arguments)
+
+    def test_other_run_prefixes_and_options_are_rejected(self) -> None:
+        cases: tuple[tuple[str, ...], ...] = (
+            (),
+            ("cat", "/etc/shadow"),
+            ("-n", "cat", "/etc/shadow"),
+            ("--", "cat", "/etc/shadow"),
+            ("--", "-n", "cat", "/etc/shadow"),
+            ("-n", "--"),
+            ("-n", "--", ""),
+            ("-n", "--", "--", "cat", "/etc/shadow"),
+            ("--non-interactive", "--", "cat", "/etc/shadow"),
+            ("-n", "-u", "root", "--", "cat", "/etc/shadow"),
+            ("-u", "root", "-n", "--", "cat", "/etc/shadow"),
+            ("-n", "-g", "root", "--", "cat", "/etc/shadow"),
+            ("-n", "-E", "--", "cat", "/etc/shadow"),
+            ("-n", "-H", "--", "cat", "/etc/shadow"),
+            ("-n", "-b", "--", "cat", "/etc/shadow"),
+            ("-ni", "--", "cat", "/etc/shadow"),
+            ("-n", "-i"),
+            ("-n", "-s"),
+            ("-n", "-e", "/etc/hosts"),
+            ("-n", "-v"),
+            ("-n", "-k"),
+            ("-n", "-K"),
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.assert_sudo(False, *arguments)
+
+    def test_other_list_forms_are_rejected(self) -> None:
+        cases: tuple[tuple[str, ...], ...] = (
+            ("-n",),
+            ("-l",),
+            ("-nl",),
+            ("-ln",),
+            ("-n", "--list"),
+            ("-n", "-l", "cat", "/etc/shadow"),
+            ("-n", "-l", "--", "cat", "/etc/shadow"),
+            ("-l", "-n", "--", "cat", "/etc/shadow"),
+            ("-n", "-l", "-U", "root"),
+            ("-n", "-l", "-h", "other-host"),
+            ("-n", "-l", "-u", "root"),
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.assert_sudo(False, *arguments)
+
+    def test_inner_command_must_pass_its_own_policy(self) -> None:
+        cases: tuple[tuple[str, ...], ...] = (
+            ("rm", "/tmp/file"),
+            ("sh", "-c", "id"),
+            ("bash",),
+            ("su", "-"),
+            ("tee", "/etc/hosts"),
+            ("systemctl", "restart", "nginx"),
+            ("find", "/", "-delete"),
+            ("sort", "--output=/etc/hosts"),
+            ("date", "--set=now"),
+            ("hostname", "changed-hostname"),
+            ("iptables", "-F"),
+            ("uniq", "input.txt", "/etc/cron.d/job"),
+            ("file", "-C", "-m", "magic"),
+            ("docker", "rm", "web"),
+            ("docker", "exec", "web", "rm", "/tmp/file"),
+        )
+        for inner in cases:
+            with self.subTest(inner=inner):
+                self.assert_sudo(False, "-n", "--", *inner)
+
+    def test_environment_assignments_and_nested_sudo_are_rejected(self) -> None:
+        cases: tuple[tuple[str, ...], ...] = (
+            ("LD_PRELOAD=/tmp/x.so", "cat", "/etc/hosts"),
+            ("PATH=/tmp", "cat", "/etc/hosts"),
+            ("-l",),
+            ("sudo", "-n", "--", "cat", "/etc/hosts"),
+            ("sudo", "-n", "-l"),
+            ("docker", "exec", "web", "sudo", "-n", "--", "cat", "/etc/hosts"),
+            ("docker", "exec", "web", "sudo", "-n", "-l"),
+        )
+        for inner in cases:
+            with self.subTest(inner=inner):
+                self.assert_sudo(False, "-n", "--", *inner)
+
+    def test_sudo_combines_with_docker_exec_in_either_order(self) -> None:
+        for pipeline in (
+            single("sudo", "-n", "--", "docker", "exec", "web", "uptime"),
+            single("docker", "exec", "web", "sudo", "-n", "--", "uptime"),
+            single("docker", "exec", "web", "sudo", "-n", "-l"),
+        ):
+            with self.subTest(pipeline=pipeline):
+                self.assert_pipeline(True, pipeline)
+
+    def test_each_pipeline_stage_is_validated_independently(self) -> None:
+        accepted: tuple[list[CommandStage], ...] = (
+            [
+                {
+                    "command": "sudo",
+                    "arguments": ["-n", "--", "cat", "/var/log/secure"],
+                },
+                {"command": "grep", "arguments": ["-c", "Failed"]},
+            ],
+            [
+                {"command": "sudo", "arguments": ["-n", "--", "iptables", "-L", "-n"]},
+                {"command": "sudo", "arguments": ["-n", "--", "head", "-n", "20"]},
+            ],
+        )
+        rejected: tuple[list[CommandStage], ...] = (
+            [
+                {"command": "jq", "arguments": ["-n", "-r", '"text"']},
+                {
+                    "command": "sudo",
+                    "arguments": ["-n", "--", "uniq", "-", "/etc/cron.d/job"],
+                },
+            ],
+            [
+                {"command": "sudo", "arguments": ["-n", "--", "cat", "/etc/shadow"]},
+                {"command": "sudo", "arguments": ["-n", "--", "tee", "/tmp/copy"]},
+            ],
+            [
+                {"command": "cat", "arguments": ["/etc/hosts"]},
+                {"command": "sudo", "arguments": ["head", "-n", "1"]},
+            ],
+        )
+        for pipeline in accepted:
+            with self.subTest(pipeline=pipeline):
+                self.assert_pipeline(True, pipeline)
+        for pipeline in rejected:
+            with self.subTest(pipeline=pipeline):
+                self.assert_pipeline(False, pipeline)
+
+    def test_stage_is_rendered_without_added_shell_syntax(self) -> None:
+        pipeline = single("sudo", "-n", "--", "grep", "-r", "a b; id", "/root")
+        self.assert_pipeline(True, pipeline)
+        self.assertEqual(
+            render_pipeline(pipeline), "sudo -n -- grep -r 'a b; id' /root"
+        )
+
+    def test_discovery_exposes_both_forms(self) -> None:
+        raw_result: object = json.loads(safe_ssh_get_command_rules(["sudo"]))
+        result = cast(dict[str, object], raw_result)
+        commands = cast(dict[str, dict[str, object]], result["commands"])
+        sudo = commands["sudo"]
+        self.assertEqual(sudo["mode"], "whitelist")
+        self.assertEqual(sudo["nested_commands"], [["-n", "--"]])
+        self.assertEqual(sudo["required_flags"], ["-n", "-l"])
+        self.assertEqual(sudo["positional_variants"], [[]])
+        self.assertEqual(
+            sudo["allowed_flags"],
+            [
+                {"flag": "-n", "value_pattern": None},
+                {"flag": "-l", "value_pattern": None},
+            ],
+        )
+        self.assertNotIn("handler", sudo)
+
+    def test_dry_runs_and_discovery_do_not_connect_to_ssh(self) -> None:
+        with patch("safe_ssh_mcp.get_ssh_connection") as connection:
+            for arguments, expected_prefix in (
+                (("-n", "--", "iptables", "-L", "-n"), "VALID:"),
+                (("-n", "-l"), "VALID:"),
+                (("-n", "--", "rm", "/tmp/file"), "INVALID:"),
+                (("-n", "-i"), "INVALID:"),
+            ):
+                with self.subTest(arguments=arguments):
+                    result = safe_ssh_validate_command(single("sudo", *arguments))
+                    self.assertTrue(result.startswith(expected_prefix), msg=result)
+            safe_ssh_get_command_rules(["sudo"])
+        connection.assert_not_called()
 
 
 def raw_policy_file(name: str, command: str) -> dict[str, object]:
@@ -1576,6 +1857,64 @@ class FlagNormalizationTests(unittest.TestCase):
     def validate_report(self, *arguments: str) -> tuple[bool, str]:
         with patch.dict(COMMAND_POLICIES, {"report": self.REPORT_POLICY}, clear=True):
             return validate_pipeline(single("report", *arguments))
+
+    def test_blacklist_rejects_every_prefix_of_a_blocked_long_flag(self) -> None:
+        export = policy(
+            "export",
+            {
+                "mode": "blacklist",
+                "flags": [
+                    {"flag": "-o", "value_pattern": ".+"},
+                    {"flag": "--output", "value_pattern": ".+"},
+                    {"flag": "--rotate", "value_pattern": None},
+                ],
+            },
+        )
+
+        def validate_export(*arguments: str) -> tuple[bool, str]:
+            with patch.dict(COMMAND_POLICIES, {"export": export}, clear=True):
+                return validate_pipeline(single("export", *arguments))
+
+        rejected: tuple[tuple[tuple[str, ...], str], ...] = (
+            (("--output=file",), "'--output' is blocked"),
+            (("--rotate",), "'--rotate' is blocked"),
+            (("--outpu=file",), "'--outpu' abbreviates blocked flag '--output'"),
+            (("--outp", "file"), "'--outp' abbreviates blocked flag '--output'"),
+            (("--o",), "'--o' abbreviates blocked flag '--output'"),
+            (("--rot",), "'--rot' abbreviates blocked flag '--rotate'"),
+            (("--r=1",), "'--r' abbreviates blocked flag '--rotate'"),
+            (("--=file",), "'--' abbreviates blocked flag"),
+            (("input", "--rota"), "'--rota' abbreviates blocked flag '--rotate'"),
+        )
+        for arguments, fragment in rejected:
+            with self.subTest(arguments=arguments):
+                accepted, reason = validate_export(*arguments)
+                self.assertFalse(accepted, msg=reason)
+                self.assertIn("not executed", reason)
+                self.assertIn(fragment, reason)
+
+        accepted_cases: tuple[tuple[str, ...], ...] = (
+            ("--outputs=file",),
+            ("--rotated",),
+            ("--other", "--verbose=2"),
+            ("-r", "input"),
+            ("--", "--outp=file"),
+        )
+        for arguments in accepted_cases:
+            with self.subTest(arguments=arguments):
+                accepted, reason = validate_export(*arguments)
+                self.assertTrue(accepted, msg=reason)
+
+    def test_whitelist_rejects_abbreviated_flags_as_undeclared(self) -> None:
+        for arguments in (
+            ("--form=json",),
+            ("--no-pag",),
+            ("--lim", "250"),
+        ):
+            with self.subTest(arguments=arguments):
+                accepted, reason = self.validate_report(*arguments)
+                self.assertFalse(accepted, msg=reason)
+                self.assertIn("is not allowed", reason)
 
     def test_separate_and_inline_long_values_are_equivalent(self) -> None:
         for arguments in (

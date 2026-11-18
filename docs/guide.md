@@ -231,6 +231,19 @@ To disable `docker exec` while retaining inspection, remove only `nested_command
 
 Existing configurations using `handler: docker` must replace that selector with `nested_commands: [["exec", "[^-].*"]]` and move inspection rules into `subcommands`; the old handler selector now stops startup. The bundled Docker policy is a complete migration example. Other flat policies and the curl handler keep their existing syntax and behavior.
 
+### Privileged commands
+
+The default [core policy](../config/policies/core.yaml) permits two `sudo` forms:
+
+- `sudo -n -- <command> [arguments...]` when the inner command and arguments pass the same effective policy used without sudo. For example, `sudo -n -- iptables -L -n` is accepted because `iptables -L -n` is.
+- `sudo -n -l`, which lists the remote account's sudo privileges without running a command.
+
+Every other form is rejected, including other sudo options, a missing `-n` or `--`, environment assignments before the command, and sudo inside sudo. In a pipeline, each stage that needs root carries its own `sudo -n --` prefix.
+
+`-n` makes sudo fail instead of prompting, so the remote account needs a `NOPASSWD` sudoers rule for the commands it should run. Without one, sudo reports that a password is required and the command does not run. sudo records every attempt in the host's logs.
+
+Under sudo, every permitted read command can read root-only files such as private keys and password hashes and return them to the agent. The policy still rejects modifying forms, but it is then the only barrier against modification as root. Restrict the account in sudoers when narrower access is required. To disable privileged execution, remove the `sudo` policy and restart the MCP server. See [ADR 007](adr/007-policy-validated-sudo.md).
+
 ## Agent-facing command format
 
 `safe_ssh_execute` and `safe_ssh_validate_command` accept a `pipeline` array of structured stages, each containing exactly `command` and `arguments`. For example, execute a bounded container listing with:
@@ -270,6 +283,8 @@ lsblk:
 Every generic command and subcommand must explicitly declare `mode: permissive`, `mode: blacklist`, or `mode: whitelist`. There is no default, and a child does not inherit its parent's mode. Missing or invalid modes stop startup. Handler policies such as `handler: curl` use their handler's validation and must not declare `mode`. Older custom generic policies that omitted `mode` previously selected permissive behavior; add `mode: permissive` to preserve that behavior, or choose another mode and declare its rules explicitly. The bundled policies already declare their modes.
 
 Every flag object must contain `value_pattern`. A string requires one value and validates it with a full-string Python regular-expression match, case-sensitive unless the pattern uses inline flags; `null` means the flag accepts no value. Generic policies accept equivalent forms `--flag value` and `--flag=value`, and `-n value` and `-nvalue`. Set `allows_flag_bundling: true` only when the command supports combined short flags; the default is `false`. The curl handler has its own grammar, reported in `handler_rules` by `safe_ssh_get_command_rules`.
+
+In blacklist mode, a long option that is a prefix of a blocked long option is rejected too: blocking `--output` also rejects `--outp` and `--o`, because many commands accept abbreviated long options. Aliases spelled differently, such as a short form or a single-dash variant, are not inferred; list every spelling the command accepts, or use whitelist mode.
 
 In whitelist mode, `positional_variants` defines complete allowed positional sequences. Array variants have exact arity. Bounded-rest variants use `args`, `rest_pattern`, `min_rest`, and `max_rest`. Set `positional_variants: [[]]` to reject positional operands. Flat whitelist policies without this field allow unrestricted positional arguments; routing nodes instead default to no root positionals. The field is rejected in blacklist and permissive modes because the values of undeclared flags cannot be distinguished reliably from positional arguments.
 

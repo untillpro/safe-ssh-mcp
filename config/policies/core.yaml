@@ -12,8 +12,14 @@ cat:
   mode: permissive
 pwd:
   mode: permissive
+# `-C`/`--compile` writes a compiled magic file. Abbreviations of the long option
+# are rejected by the validator.
 file:
-  mode: permissive
+  mode: blacklist
+  allows_flag_bundling: true
+  flags:
+    - { flag: -C, value_pattern: null }
+    - { flag: --compile, value_pattern: null }
 stat:
   mode: permissive
 
@@ -36,8 +42,37 @@ sort:
       value_pattern: '.+'
     - flag: --compress-program
       value_pattern: '.+'
+# A second operand names an output file, so at most the input operand is allowed.
+# `--all-repeated` and `--group` are valueless here: a separated method would be
+# read by uniq as the input operand and shift the next token to the output file.
 uniq:
-  mode: permissive
+  mode: whitelist
+  allows_flag_bundling: true
+  flags:
+    - { flag: -c, value_pattern: null }
+    - { flag: --count, value_pattern: null }
+    - { flag: -d, value_pattern: null }
+    - { flag: --repeated, value_pattern: null }
+    - { flag: -D, value_pattern: null }
+    - { flag: --all-repeated, value_pattern: null }
+    - { flag: --group, value_pattern: null }
+    - { flag: -f, value_pattern: '[0-9]{1,9}' }
+    - { flag: --skip-fields, value_pattern: '[0-9]{1,9}' }
+    - { flag: -i, value_pattern: null }
+    - { flag: --ignore-case, value_pattern: null }
+    - { flag: -s, value_pattern: '[0-9]{1,9}' }
+    - { flag: --skip-chars, value_pattern: '[0-9]{1,9}' }
+    - { flag: -u, value_pattern: null }
+    - { flag: --unique, value_pattern: null }
+    - { flag: -w, value_pattern: '[0-9]{1,9}' }
+    - { flag: --check-chars, value_pattern: '[0-9]{1,9}' }
+    - { flag: -z, value_pattern: null }
+    - { flag: --zero-terminated, value_pattern: null }
+    - { flag: --help, value_pattern: null }
+    - { flag: --version, value_pattern: null }
+  positional_variants:
+    - []
+    - ['.+']
 cut:
   mode: permissive
 tr:
@@ -215,3 +250,19 @@ nc:
       value_pattern: null
   require_flags:
     - -z
+
+# Privileged execution -- `sudo -n -- COMMAND` runs a command that passes its own
+# effective policy; `sudo -n -l` lists the account's sudo privileges. Every other
+# sudo form is rejected. Remove this policy to disable privileged execution.
+sudo:
+  mode: whitelist
+  flags:
+    - { flag: -n, value_pattern: null }
+    - { flag: -l, value_pattern: null }
+  require_flags:
+    - -n
+    - -l
+  positional_variants:
+    - []
+  nested_commands:
+    - ['-n', '--']
